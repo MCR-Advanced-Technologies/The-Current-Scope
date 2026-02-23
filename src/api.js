@@ -254,7 +254,7 @@ function buildDefaultBase() {
     return envNormalized;
   }
   if (typeof window !== "undefined") {
-    if (!isAppRuntime()) {
+    if (!isAppRuntime() && import.meta.env.DEV) {
       const protocol =
         window.location.protocol === "https:" || window.location.protocol === "http:"
           ? window.location.protocol
