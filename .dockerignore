@@ -1,0 +1,17 @@
+# Node build artifacts
+node_modules/
+dist/
+.vite/
+coverage/
+*.log
+
+# Secrets
+.env
+.env.*
+
+# VCS / editor noise
+.git
+.gitignore
+.DS_Store
+.vscode/
+.idea/
