@@ -4,6 +4,16 @@ import "@fortawesome/fontawesome-free/css/all.min.css";
 import App from "./App";
 import "./styles.css";
 
+if (typeof window !== "undefined") {
+  const host = (window.location.hostname || "").toLowerCase();
+  if (host === "frontend.thecurrentscope.com") {
+    const target = `https://thecurrentscope.com${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (window.location.href !== target) {
+      window.location.replace(target);
+    }
+  }
+}
+
 function CrashScreen({ error }) {
   const message =
     error && (error.stack || error.message || String(error))
