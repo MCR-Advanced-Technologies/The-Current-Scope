@@ -6312,7 +6312,7 @@ export default function App() {
               <input
                 type="url"
                 value={backendUrlDraft}
-                placeholder="https://newsapp-backend.rousehouse.net"
+                placeholder="https://api.thecurrentscope.com"
                 onChange={(e) => setBackendUrlDraft(e.target.value)}
               />
               <p className="muted small">

@@ -22,6 +22,14 @@ const CLIENT_TOKEN =
   import.meta.env.VITE_APP_CLIENT_TOKEN ||
   import.meta.env.VITE_FRONTEND_CLIENT_TOKEN ||
   "";
+const DEPRECATED_BACKEND_HOSTS = new Set([
+  "newsapp-backend.rousehouse.net",
+  "newsapp_backend.rousehouse.net",
+  "thecurrentscope.com",
+  "www.thecurrentscope.com",
+  "frontend.thecurrentscope.com",
+  "victorious-water-014b7860f.1.azurestaticapps.net",
+]);
 
 let buildHashCache = "";
 let webTokenMemory = "";
@@ -218,18 +226,15 @@ function mapLegacyBackendToProxy(baseUrl) {
   try {
     const parsed = new URL(baseUrl);
     const host = (parsed.hostname || "").toLowerCase();
-    if (
-      host === "newsapp-backend.rousehouse.net" ||
-      host === "newsapp_backend.rousehouse.net"
-    ) {
-      const protocol =
-        window.location.protocol === "https:" || window.location.protocol === "http:"
-          ? window.location.protocol
-          : "https:";
-      const hostWithPort = window.location.host || "";
-      if (!hostWithPort) return baseUrl;
-      return `${protocol}//${hostWithPort}/api`;
-    }
+    if (DEPRECATED_BACKEND_HOSTS.has(host)) return FALLBACK_BASE;
+    const currentHost = (window.location.hostname || "").toLowerCase();
+    const path = (parsed.pathname || "").toLowerCase();
+    const isSameOriginApi =
+      host &&
+      currentHost &&
+      host === currentHost &&
+      (path === "/api" || path.startsWith("/api/"));
+    if (isSameOriginApi) return FALLBACK_BASE;
     return baseUrl;
   } catch (err) {
     return baseUrl;
