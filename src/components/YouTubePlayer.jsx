@@ -13,7 +13,10 @@ function isHttpProtocol(protocol) {
 }
 
 function devLog(eventName, payload = {}) {
-  if (!import.meta.env.DEV) return;
+  const enabled = ["1", "true", "yes"].includes(
+    String(import.meta.env.VITE_YT_DEBUG || "").toLowerCase()
+  );
+  if (!import.meta.env.DEV || !enabled) return;
   try {
     // eslint-disable-next-line no-console
     console.info(`[YouTubePlayer] ${eventName}`, payload);

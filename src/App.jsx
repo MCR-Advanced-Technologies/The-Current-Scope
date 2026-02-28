@@ -459,6 +459,8 @@ const APP_VERSION =
 const BRAND_NAME = "Current Scope";
 const UPDATE_MANIFEST_FILE = "update.json";
 const INSTALLER_MANIFEST_FILE = "manifest";
+const GITHUB_RELEASES_API_LATEST =
+  "https://api.github.com/repos/MCR-Advanced-Technologies/The-Current-Scope/releases/latest";
 const HEADLINE_LIMIT = 60;
 const RESULTS_LIMIT = 200;
 const VIDEO_RESULTS_LIMIT = 240;
@@ -1108,6 +1110,118 @@ function resolveInstallerAssetUrl(baseUrl, fallbackFile, rawUrl) {
   if (candidate.startsWith("/")) return `${base}${candidate}`;
   const normalized = candidate.replace(/^installers\//i, "");
   return `${base}/installers/${normalized}`;
+}
+
+function normalizeInstallerPlatformId(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text) return "";
+  if (text.startsWith("win")) return "windows";
+  if (text.startsWith("andr") || text === "apk") return "android";
+  if (text.startsWith("lin") || text === "deb") return "linux";
+  return "";
+}
+
+function inferInstallerPlatformFromName(name) {
+  const lower = String(name || "").trim().toLowerCase();
+  if (!lower) return "";
+  if (lower.endsWith(".exe")) return "windows";
+  if (lower.endsWith(".apk")) return "android";
+  if (lower.endsWith(".deb")) return "linux";
+  return "";
+}
+
+function parseInstallerStateFromManifestPayload(manifest, baseUrl) {
+  const availability = Object.fromEntries(
+    INSTALLER_ASSETS.map((asset) => [asset.id, false])
+  );
+  const platforms = {};
+  if (!manifest || typeof manifest !== "object") {
+    return { availability, platforms };
+  }
+
+  const assetById = Object.fromEntries(
+    INSTALLER_ASSETS.map((asset) => [asset.id, asset])
+  );
+
+  const rawPlatforms =
+    manifest.platforms && typeof manifest.platforms === "object"
+      ? manifest.platforms
+      : {};
+  Object.entries(rawPlatforms).forEach(([key, info]) => {
+    const id = normalizeInstallerPlatformId(key);
+    if (!id || !assetById[id]) return;
+    const fallbackFile = assetById[id].file;
+    const url = resolveInstallerAssetUrl(baseUrl, fallbackFile, info?.url || "");
+    if (!url) return;
+    availability[id] = true;
+    platforms[id] = {
+      ...(info && typeof info === "object" ? info : {}),
+      url,
+    };
+  });
+
+  const files = Array.isArray(manifest.files) ? manifest.files : [];
+  files.forEach((entry) => {
+    if (!entry || typeof entry !== "object") return;
+    const name = String(entry.name || "").trim();
+    if (!name) return;
+    const platformFromEntry = normalizeInstallerPlatformId(entry.platform);
+    const platformId = platformFromEntry || inferInstallerPlatformFromName(name);
+    if (!platformId || !assetById[platformId]) return;
+    if (availability[platformId]) return;
+    const fallbackFile = assetById[platformId].file;
+    const url = resolveInstallerAssetUrl(baseUrl, fallbackFile, entry.url || name);
+    if (!url) return;
+    availability[platformId] = true;
+    platforms[platformId] = {
+      ...(entry && typeof entry === "object" ? entry : {}),
+      url,
+    };
+  });
+
+  return { availability, platforms };
+}
+
+function parseInstallerStateFromGithubReleasePayload(release, baseUrl) {
+  const availability = Object.fromEntries(
+    INSTALLER_ASSETS.map((asset) => [asset.id, false])
+  );
+  const platforms = {};
+  if (!release || typeof release !== "object") {
+    return { availability, platforms };
+  }
+  const assets = Array.isArray(release.assets) ? release.assets : [];
+  const version =
+    normalizeVersion(release.tag_name || "") || normalizeVersion(release.name || "");
+
+  assets.forEach((asset) => {
+    if (!asset || typeof asset !== "object") return;
+    const name = String(asset.name || "").trim();
+    if (!name) return;
+    const platformId =
+      normalizeInstallerPlatformId(asset.platform) || inferInstallerPlatformFromName(name);
+    if (!platformId || availability[platformId]) return;
+    const url = resolveInstallerAssetUrl(
+      baseUrl,
+      name,
+      asset.browser_download_url || asset.url || name
+    );
+    if (!url) return;
+    availability[platformId] = true;
+    platforms[platformId] = {
+      name,
+      size: Number(asset.size || 0) || undefined,
+      version,
+      url,
+      modified: asset.updated_at || asset.created_at || "",
+    };
+  });
+
+  return { availability, platforms };
+}
+
+function hasAnyInstallerAvailable(availability) {
+  return Object.values(availability || {}).some(Boolean);
 }
 
 
@@ -1929,55 +2043,66 @@ export default function App() {
     installerFetchAbortRef.current = controller;
 
     const installerManifestUrl = `${base}/installers/${INSTALLER_MANIFEST_FILE}?t=${Date.now()}`;
+    const installerUpdateUrl = `${base}/installers/${UPDATE_MANIFEST_FILE}?t=${Date.now()}`;
     try {
       const manifestRes = await fetch(installerManifestUrl, {
         cache: "no-store",
         signal: controller ? controller.signal : undefined,
       });
-      if (manifestRes.status === 404) {
-        installerManifestMissingRef.current = base;
-        setInstallerPlatforms({});
-        setInstallerAvailability(emptyAvailability);
-        writeInstallerManifestCache(base, {
-          platforms: {},
-          availability: emptyAvailability,
-        });
-        return;
+      if (manifestRes.ok) {
+        const manifest = await manifestRes.json();
+        const parsed = parseInstallerStateFromManifestPayload(manifest, base);
+        if (hasAnyInstallerAvailable(parsed.availability)) {
+          installerManifestMissingRef.current = "";
+          setInstallerPlatforms(parsed.platforms);
+          setInstallerAvailability(parsed.availability);
+          writeInstallerManifestCache(base, parsed);
+          return;
+        }
       }
-      if (!manifestRes.ok) {
-        const err = new Error(`HTTP ${manifestRes.status}`);
-        err.status = manifestRes.status;
+
+      const updateRes = await fetch(installerUpdateUrl, {
+        cache: "no-store",
+        signal: controller ? controller.signal : undefined,
+      });
+      if (updateRes.ok) {
+        const updatePayload = await updateRes.json();
+        const parsed = parseInstallerStateFromManifestPayload(updatePayload, base);
+        if (hasAnyInstallerAvailable(parsed.availability)) {
+          installerManifestMissingRef.current = "";
+          setInstallerPlatforms(parsed.platforms);
+          setInstallerAvailability(parsed.availability);
+          writeInstallerManifestCache(base, parsed);
+          return;
+        }
+      }
+
+      const ghRes = await fetch(GITHUB_RELEASES_API_LATEST, {
+        cache: "no-store",
+        signal: controller ? controller.signal : undefined,
+      });
+      if (!ghRes.ok) {
+        const err = new Error(`HTTP ${ghRes.status}`);
+        err.status = ghRes.status;
         throw err;
       }
+      const ghRelease = await ghRes.json();
+      const ghParsed = parseInstallerStateFromGithubReleasePayload(ghRelease, base);
+      if (hasAnyInstallerAvailable(ghParsed.availability)) {
+        installerManifestMissingRef.current = "";
+        setInstallerPlatforms(ghParsed.platforms);
+        setInstallerAvailability(ghParsed.availability);
+        writeInstallerManifestCache(base, ghParsed);
+        return;
+      }
 
-      installerManifestMissingRef.current = "";
-      const manifest = await manifestRes.json();
-      const files = Array.isArray(manifest?.files) ? manifest.files : [];
-      const knownFiles = new Set(
-        files
-          .map((entry) => String(entry?.name || "").trim())
-          .filter(Boolean)
-      );
-      const availability = {};
-      const platforms = {};
-      INSTALLER_ASSETS.forEach((asset) => {
-        const available = knownFiles.has(asset.file);
-        availability[asset.id] = available;
-        if (available) {
-          const matched = files.find(
-            (entry) => String(entry?.name || "").trim().toLowerCase() === asset.file.toLowerCase()
-          );
-          platforms[asset.id] = {
-            url: resolveInstallerAssetUrl(base, asset.file, ""),
-            size: matched?.size,
-            modified: matched?.modified || "",
-          };
-        }
+      installerManifestMissingRef.current = base;
+      setInstallerPlatforms({});
+      setInstallerAvailability(emptyAvailability);
+      writeInstallerManifestCache(base, {
+        platforms: {},
+        availability: emptyAvailability,
       });
-
-      setInstallerPlatforms(platforms);
-      setInstallerAvailability(availability);
-      writeInstallerManifestCache(base, { platforms, availability });
     } catch (err) {
       if (err?.name === "AbortError") return;
       const issue = classifyRequestError(err, "Installer availability check failed.");
