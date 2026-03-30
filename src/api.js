@@ -331,6 +331,8 @@ function mapLegacyBackendToProxy(baseUrl) {
   try {
     const parsed = new URL(baseUrl);
     const host = (parsed.hostname || "").toLowerCase();
+    const currentHost = (window.location.hostname || "").toLowerCase();
+    const currentPath = parsed.pathname.replace(/\/+$/, "") || "/";
     if (
       host === "newsapp-backend.rousehouse.net" ||
       host === "newsapp_backend.rousehouse.net" ||
@@ -343,6 +345,14 @@ function mapLegacyBackendToProxy(baseUrl) {
       const hostWithPort = window.location.host || "";
       if (!hostWithPort) return baseUrl;
       return `${protocol}//${hostWithPort}/api`;
+    }
+    const usesLocalProxy =
+      currentHost === "localhost" ||
+      currentHost === "127.0.0.1" ||
+      currentHost.endsWith(".local") ||
+      currentHost.endsWith(".rousehouse.net");
+    if (!usesLocalProxy && host === currentHost && currentPath === "/api") {
+      return FALLBACK_BASE;
     }
     return baseUrl;
   } catch (err) {
@@ -390,8 +400,8 @@ function buildDefaultBase() {
       const port = import.meta.env.VITE_BACKEND_PORT || "8001";
       return `${protocol}//${host}:${port}`;
     }
-    if (!isAppRuntime() && hostWithPort) {
-      return `${protocol}//${hostWithPort}/api`;
+    if (!isAppRuntime()) {
+      return FALLBACK_BASE;
     }
   }
   return FALLBACK_BASE;
