@@ -107,7 +107,8 @@ async function networkFirst(request) {
     }
     return response;
   } catch {
-    return await caches.match(request);
+    const cached = await caches.match(request);
+    return cached || Response.error();
   }
 }
 

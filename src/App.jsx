@@ -431,6 +431,22 @@ function buildDefaultSettingsState() {
   };
 }
 
+function normalizeBackendUrl(value) {
+  if (!value) return "";
+  let candidate = String(value).trim();
+  if (!candidate) return "";
+  if (!/^https?:\/\//i.test(candidate)) {
+    candidate = `https://${candidate}`;
+  }
+  try {
+    const parsed = new URL(candidate);
+    const path = parsed.pathname.replace(/\/+$/, "");
+    return `${parsed.protocol}//${parsed.host}${path}`;
+  } catch (err) {
+    return "";
+  }
+}
+
 function readSettings() {
   if (typeof window === "undefined") {
     return buildDefaultSettingsState();
@@ -1558,22 +1574,6 @@ export default function App() {
         background: `linear-gradient(135deg, ${previewPalette.bg}, ${previewPalette.accent})`,
       }
     : { background: "linear-gradient(135deg, var(--bg), var(--accent))" };
-
-  function normalizeBackendUrl(value) {
-    if (!value) return "";
-    let candidate = String(value).trim();
-    if (!candidate) return "";
-    if (!/^https?:\/\//i.test(candidate)) {
-      candidate = `https://${candidate}`;
-    }
-    try {
-      const parsed = new URL(candidate);
-      const path = parsed.pathname.replace(/\/+$/, "");
-      return `${parsed.protocol}//${parsed.host}${path}`;
-    } catch (err) {
-      return "";
-    }
-  }
 
   function updateSetting(key, value) {
     setSettings((prev) => {
