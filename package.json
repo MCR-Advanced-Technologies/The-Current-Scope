@@ -1,6 +1,6 @@
 {
   "name": "newsapp-frontend",
-  "version": "0.1.25",
+  "version": "0.1.29",
   "private": true,
   "scripts": {
     "ci": "npm ci",
