@@ -4,16 +4,6 @@ import "@fortawesome/fontawesome-free/css/all.min.css";
 import App from "./App";
 import "./styles.css";
 
-if (typeof window !== "undefined") {
-  const host = (window.location.hostname || "").toLowerCase();
-  if (host === "frontend.thecurrentscope.com") {
-    const target = `https://thecurrentscope.com${window.location.pathname}${window.location.search}${window.location.hash}`;
-    if (window.location.href !== target) {
-      window.location.replace(target);
-    }
-  }
-}
-
 function CrashScreen({ error }) {
   const message =
     error && (error.stack || error.message || String(error))
@@ -137,53 +127,50 @@ createRoot(document.getElementById("root")).render(
   </React.StrictMode>
 );
 
-const SW_DEBUG_ENABLED = ["1", "true", "yes"].includes(
-  String(import.meta.env.VITE_SW_DEBUG || "").toLowerCase()
-);
-
-function logSwDebug(...args) {
-  if (!SW_DEBUG_ENABLED) return;
-  // eslint-disable-next-line no-console
-  console.info("[SW]", ...args);
-}
-
-if (import.meta.env.PROD && "serviceWorker" in navigator) {
+if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    let reloadTriggered = false;
-
+    let isRefreshing = false;
     const onControllerChange = () => {
-      if (reloadTriggered) return;
-      reloadTriggered = true;
-      logSwDebug("controllerchange -> reload");
+      if (isRefreshing) return;
+      isRefreshing = true;
       window.location.reload();
     };
-
     navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
+
+    const requestRuntimeCacheClear = async (registration) => {
+      if (!registration) return;
+      if (registration.sync && typeof registration.sync.register === "function") {
+        try {
+          await registration.sync.register("clear-runtime-cache");
+          return;
+        } catch (_) {
+          // Fall through to direct worker messaging when Background Sync is unavailable.
+        }
+      }
+      try {
+        const worker =
+          registration.waiting ||
+          registration.active ||
+          navigator.serviceWorker.controller;
+        worker?.postMessage({ type: "CLEAR_RUNTIME_CACHE" });
+      } catch (_) {
+        // Cache clearing is best-effort and should not block activation.
+      }
+    };
 
     const promptForUpdate = (registration) => {
       if (!registration?.waiting) return;
-      const accepted =
-        typeof window.confirm === "function"
-          ? window.confirm("Update available. Reload to apply it now?")
-          : true;
-      if (!accepted) {
-        logSwDebug("update available, user deferred");
-        return;
+      const message = "Update available. Reload now?";
+      const accepted = typeof window.confirm === "function" ? window.confirm(message) : true;
+      if (accepted) {
+        void requestRuntimeCacheClear(registration);
+        registration.waiting.postMessage({ type: "SKIP_WAITING" });
       }
-      logSwDebug("sending SKIP_WAITING");
-      registration.waiting.postMessage({ type: "SKIP_WAITING" });
     };
 
-    const baseUrl = import.meta.env.BASE_URL || "/";
-    const swScriptUrl = new URL(
-      `service-worker.js${SW_DEBUG_ENABLED ? "?debug=1" : ""}`,
-      window.location.origin + baseUrl
-    ).toString();
-
     navigator.serviceWorker
-      .register(swScriptUrl, { scope: baseUrl })
+      .register("/service-worker.js")
       .then((registration) => {
-        logSwDebug("registered", swScriptUrl, "scope", baseUrl);
         if (registration.waiting) {
           promptForUpdate(registration);
         }
@@ -191,7 +178,6 @@ if (import.meta.env.PROD && "serviceWorker" in navigator) {
           const installing = registration.installing;
           if (!installing) return;
           installing.addEventListener("statechange", () => {
-            logSwDebug("installing state", installing.state);
             if (
               installing.state === "installed" &&
               navigator.serviceWorker.controller
@@ -201,8 +187,8 @@ if (import.meta.env.PROD && "serviceWorker" in navigator) {
           });
         });
       })
-      .catch((err) => {
-        logSwDebug("registration failed", err);
+      .catch(() => {
+        // Service worker registration failure should not block the app.
       });
   });
 }

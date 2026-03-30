@@ -4,7 +4,6 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const DEFAULT_FRONTEND_PORT = 5174;
-const DEFAULT_BACKEND_PROXY_TARGET = "http://localhost:8001";
 
 function resolveEnv(mode) {
   const fileEnv = loadEnv(mode, process.cwd(), "");
@@ -35,74 +34,16 @@ function resolvePort(env, fallback) {
   return fallback;
 }
 
-function normalizeOrigin(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return "";
-  try {
-    return new URL(raw).origin;
-  } catch (err) {
-    return "";
-  }
-}
-
-function resolveBackendProxyTarget(env) {
-  const raw =
-    env.VITE_BACKEND_PROXY_TARGET ||
-    env.BACKEND_PROXY_TARGET ||
-    DEFAULT_BACKEND_PROXY_TARGET;
-  try {
-    const parsed = new URL(raw);
-    return parsed.toString().replace(/\/+$/, "");
-  } catch (err) {
-    throw new Error(
-      `Invalid backend proxy target "${raw}". Set VITE_BACKEND_PROXY_TARGET/BACKEND_PROXY_TARGET to a valid URL.`
-    );
-  }
-}
-
-function normalizeBasePath(value) {
-  const raw = String(value || "/").trim();
-  if (!raw || raw === "/") return "/";
-  let next = raw;
-  if (!next.startsWith("/")) {
-    next = `/${next}`;
-  }
-  if (!next.endsWith("/")) {
-    next = `${next}/`;
-  }
-  return next;
-}
-
-function buildConnectSrc(env, mode) {
-  const connect = new Set(["'self'"]);
-  const backendOrigin = normalizeOrigin(
-    env.VITE_BACKEND_URL || env.BACKEND_URL || ""
-  );
-  if (backendOrigin) {
-    connect.add(backendOrigin);
-  }
-  if (mode === "development") {
-    connect.add("http:");
-    connect.add("https:");
-    connect.add("ws:");
-    connect.add("wss:");
-  } else {
-    connect.add("https:");
-  }
-  return Array.from(connect).join(" ");
-}
-
-function buildCspHeader(env, mode) {
-  const connectSrc = buildConnectSrc(env, mode);
+function buildCspHeader() {
   return [
     "default-src 'self'",
     "script-src 'self' 'unsafe-inline' https://www.youtube.com https://www.youtube-nocookie.com https://static.cloudflareinsights.com https://maps.googleapis.com https://maps.gstatic.com",
     "script-src-elem 'self' 'unsafe-inline' https://www.youtube.com https://www.youtube-nocookie.com https://static.cloudflareinsights.com https://maps.googleapis.com https://maps.gstatic.com",
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "img-src 'self' data: blob: https://i.ytimg.com https:",
-    `connect-src ${connectSrc}`,
+    "connect-src 'self' https: ws: wss:",
     "media-src 'self' https: blob:",
-    "frame-src https://www.youtube.com https://www.youtube-nocookie.com",
+    "frame-src https://www.youtube.com https://www.youtube-nocookie.com https://www.dailymotion.com https://geo.dailymotion.com",
     "font-src 'self' data: https://fonts.gstatic.com",
     "object-src 'none'",
     "base-uri 'self'",
@@ -110,16 +51,14 @@ function buildCspHeader(env, mode) {
   ].join("; ");
 }
 
-function injectCspMeta(html, csp) {
-  return html.replaceAll("__APP_CSP__", csp);
-}
-
 export default defineConfig(({ mode }) => {
   const env = resolveEnv(mode);
   const https = resolveHttps(env);
   const port = resolvePort(env, DEFAULT_FRONTEND_PORT);
-  const backendProxyTarget = resolveBackendProxyTarget(env);
-  const basePath = normalizeBasePath(env.VITE_BASE_PATH || env.BASE_PATH || "/");
+  const backendProxyTarget =
+    env.VITE_BACKEND_PROXY_TARGET ||
+    env.BACKEND_PROXY_TARGET ||
+    "https://172.28.0.1:8001";
   let packageVersion = "0.1.0";
   try {
     const pkg = JSON.parse(
@@ -129,21 +68,12 @@ export default defineConfig(({ mode }) => {
   } catch (err) {
     packageVersion = "0.1.0";
   }
-  const csp = buildCspHeader(env, mode);
+  const csp = buildCspHeader();
   const rootDir = path.dirname(fileURLToPath(import.meta.url));
   return {
-    base: basePath,
     define: {
       "import.meta.env.PACKAGE_VERSION": JSON.stringify(packageVersion),
     },
-    plugins: [
-      {
-        name: "inject-csp-meta",
-        transformIndexHtml(html) {
-          return injectCspMeta(html, csp);
-        },
-      },
-    ],
     server: {
       host: "0.0.0.0",
       port,
@@ -152,6 +82,7 @@ export default defineConfig(({ mode }) => {
         // YouTube embedded players require a Referer; do not suppress it.
         "Referrer-Policy": "strict-origin-when-cross-origin",
         "Content-Security-Policy": csp,
+        "Permissions-Policy": "picture-in-picture=*",
       },
       proxy: {
         "/api": {
@@ -177,6 +108,7 @@ export default defineConfig(({ mode }) => {
       headers: {
         "Referrer-Policy": "strict-origin-when-cross-origin",
         "Content-Security-Policy": csp,
+        "Permissions-Policy": "picture-in-picture=*",
       },
     },
   };

@@ -1,10 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 import {
   fetchArticles,
   fetchVideos,
-  fetchVideoPlayback,
   fetchRadios,
   fetchWeather,
+  fetchWeatherHourly,
+  fetchWeatherDaily,
   fetchProviderStats,
   fetchSourceStats,
   fetchArticleCount,
@@ -12,438 +15,35 @@ import {
   fetchReadableHtml,
   getBackendUrl,
 } from "./api";
-import { extractYouTubeVideoId } from "./youtube.mjs";
 import Filters from "./components/Filters";
 import ArticlesList from "./components/ArticlesList";
-import MediaPlayer from "./components/MediaPlayer";
 import ServiceControls from "./components/ServiceControls";
 import { AppMenuModal, AppSettingsModal } from "./components/Settings";
-import YouTubePlayer from "./components/YouTubePlayer.jsx";
-
-
-function getVideoThumb(video) {
-  if (!video) return "";
-  return video.thumbnail_url || video.thumbnailUrl || "";
-}
-
-function toUrl(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return null;
-  try {
-    return new URL(raw);
-  } catch (err) {
-    try {
-      return new URL(`https://${raw}`);
-    } catch (err2) {
-      return null;
-    }
-  }
-}
-
-function isYouTubeStreamUrl(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return false;
-  const lower = raw.toLowerCase();
-  if (lower.includes("googlevideo.com") || lower.includes("videoplayback")) {
-    return true;
-  }
-  const parsed = toUrl(raw);
-  if (!parsed) return false;
-  const host = String(parsed.hostname || "").toLowerCase();
-  const path = String(parsed.pathname || "").toLowerCase();
-  return host.includes("googlevideo.com") || path.includes("videoplayback");
-}
-
-function isYouTubeOrGoogleVideoUrl(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return false;
-  if (isYouTubeStreamUrl(raw)) return true;
-  if (extractYouTubeVideoId(raw)) return true;
-  const parsed = toUrl(raw);
-  if (!parsed) {
-    return /(?:youtube|youtu\.be|youtube-nocookie)/i.test(raw);
-  }
-  const host = String(parsed.hostname || "").toLowerCase();
-  if (
-    host.includes("youtube.com") ||
-    host.includes("youtu.be") ||
-    host.includes("youtube-nocookie.com") ||
-    host.includes("youtube.googleapis.com")
-  ) {
-    return true;
-  }
-  return false;
-}
-
-function isHttpMediaUrl(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return false;
-  return /^https?:\/\//i.test(raw);
-}
-
-function looksLikeDirectVideoUrl(value) {
-  const raw = String(value || "").trim();
-  if (!raw || !isHttpMediaUrl(raw)) return false;
-  const lower = raw.toLowerCase();
-  if (isYouTubeStreamUrl(raw)) return true;
-  if (
-    lower.includes("youtube.com") ||
-    lower.includes("youtu.be") ||
-    lower.includes("youtube-nocookie.com")
-  ) {
-    return false;
-  }
-  const parsed = toUrl(raw);
-  const pathname = String(parsed?.pathname || "").toLowerCase();
-  if (/\.(mp4|webm|ogg|m3u8)(?:$|[?#])/i.test(pathname)) return true;
-  const hint = `${pathname} ${String(parsed?.search || "").toLowerCase()}`;
-  return (
-    hint.includes("stream") ||
-    hint.includes("playlist") ||
-    hint.includes("manifest") ||
-    hint.includes("mime=video") ||
-    hint.includes("content-type=video") ||
-    hint.includes("format=mp4") ||
-    hint.includes("ext=mp4") ||
-    hint.includes("m3u8")
-  );
-}
-
-function getNativeVideoPlaybackUrl(video) {
-  if (!video || typeof video !== "object") return "";
-  const candidates = [
-    video.playback_url,
-    video.playbackUrl,
-    video.stream_url,
-    video.streamUrl,
-    video.hls_url,
-    video.hlsUrl,
-    video.video_url,
-    video.videoUrl,
-    video.embed_url,
-    video.embedUrl,
-    video.url,
-    video.source_url,
-    video.sourceUrl,
-  ];
-  for (const candidate of candidates) {
-    const raw = String(candidate || "").trim();
-    if (!raw) continue;
-    if (isYouTubeOrGoogleVideoUrl(raw) && !isYouTubeStreamUrl(raw)) continue;
-    if (!looksLikeDirectVideoUrl(raw)) continue;
-    return raw;
-  }
-  return "";
-}
-
-function getVideoResolveSourceUrl(video) {
-  if (!video || typeof video !== "object") return "";
-  const candidates = [
-    video.video_url,
-    video.videoUrl,
-    video.embed_url,
-    video.embedUrl,
-    video.url,
-    video.source_url,
-    video.sourceUrl,
-    video.watch_url,
-    video.watchUrl,
-    video.playback_url,
-    video.playbackUrl,
-    video.stream_url,
-    video.streamUrl,
-    video.hls_url,
-    video.hlsUrl,
-  ];
-  for (const candidate of candidates) {
-    const raw = String(candidate || "").trim();
-    if (!raw || !isHttpMediaUrl(raw)) continue;
-    return raw;
-  }
-  return "";
-}
-
-function getVideoExternalUrl(video) {
-  if (!video || typeof video !== "object") return "";
-  const watchUrl = (video.watch_url || video.watchUrl || "").trim();
-  const sourceWatchUrl = (video.source_watch_url || video.sourceWatchUrl || "").trim();
-  const videoUrl = (video.video_url || video.videoUrl || "").trim();
-  const embedUrl = (video.embed_url || video.embedUrl || "").trim();
-  const sourceUrl = (video.url || video.source_url || video.sourceUrl || "").trim();
-  const playbackUrl = (video.playback_url || video.playbackUrl || "").trim();
-  const streamUrl = (video.stream_url || video.streamUrl || "").trim();
-  const hlsUrl = (video.hls_url || video.hlsUrl || "").trim();
-  const videoId = (video.video_id || video.videoId || "").trim();
-  if (watchUrl) return watchUrl;
-  if (sourceWatchUrl) return sourceWatchUrl;
-  if (videoId) {
-    return `https://www.youtube.com/watch?v=${videoId}`;
-  }
-  const videoIdFromUrl =
-    extractYouTubeVideoId(videoUrl) ||
-    extractYouTubeVideoId(embedUrl) ||
-    extractYouTubeVideoId(sourceUrl);
-  if (videoIdFromUrl) {
-    return `https://www.youtube.com/watch?v=${videoIdFromUrl}`;
-  }
-  const nonStreamCandidates = [sourceUrl, videoUrl, embedUrl, playbackUrl, streamUrl, hlsUrl];
-  for (const candidate of nonStreamCandidates) {
-    const value = String(candidate || "").trim();
-    if (!value) continue;
-    if (isYouTubeStreamUrl(value)) continue;
-    return value;
-  }
-  return sourceUrl || videoUrl || embedUrl || playbackUrl || streamUrl || hlsUrl;
-}
-
-function getVideoPlaybackId(video) {
-  if (!video || typeof video !== "object") return "";
-  const sourceUrl = (video.video_url || video.videoUrl || "").trim();
-  const embedUrl = (video.embed_url || video.embedUrl || "").trim();
-  const videoId =
-    extractYouTubeVideoId(sourceUrl) || extractYouTubeVideoId(embedUrl);
-  if (videoId) {
-    return `yt:${videoId}`;
-  }
-  const directUrl = getNativeVideoPlaybackUrl(video) || sourceUrl || embedUrl || getVideoExternalUrl(video);
-  if (directUrl) {
-    return `url:${directUrl}`;
-  }
-  const rawId = video.id || "";
-  return rawId ? `id:${rawId}` : "";
-}
-
-function isResolvableRemoteVideo(video) {
-  if (!video || typeof video !== "object") return false;
-  const youtubeId =
-    extractYouTubeVideoId(video?.video_url) ||
-    extractYouTubeVideoId(video?.videoUrl) ||
-    extractYouTubeVideoId(video?.embed_url) ||
-    extractYouTubeVideoId(video?.embedUrl) ||
-    extractYouTubeVideoId(video?.url) ||
-    extractYouTubeVideoId(video?.source_url) ||
-    extractYouTubeVideoId(video?.sourceUrl);
-  if (youtubeId) return true;
-  if (getNativeVideoPlaybackUrl(video)) return true;
-  return Boolean(getVideoResolveSourceUrl(video) || getVideoExternalUrl(video));
-}
-
-function InlineVideoPlayer({
-  video,
-  onEnded,
-  openExternal,
-  autoPlay = true,
-  muted = true,
-}) {
-  const nativePlayerRef = useRef(null);
-  const [nativeFailed, setNativeFailed] = useState(false);
-  const [resolvedPlaybackUrl, setResolvedPlaybackUrl] = useState("");
-  const [resolvePending, setResolvePending] = useState(false);
-  const [resolveReason, setResolveReason] = useState("");
-  const [resolveAttempted, setResolveAttempted] = useState(false);
-  const sourceUrl = String(
-    video?.video_url ||
-      video?.videoUrl ||
-      video?.embed_url ||
-      video?.embedUrl ||
-      video?.url ||
-      video?.source_url ||
-      video?.sourceUrl ||
-      ""
-  ).trim();
-  const nativePlaybackUrl = getNativeVideoPlaybackUrl(video);
-  const resolveSourceUrl = getVideoResolveSourceUrl(video);
-  const effectivePlaybackUrl = nativePlaybackUrl || resolvedPlaybackUrl;
-  const videoId =
-    String(video?.video_id || video?.videoId || "").trim() ||
-    extractYouTubeVideoId(sourceUrl) ||
-    extractYouTubeVideoId(video?.url) ||
-    extractYouTubeVideoId(video?.source_url) ||
-    extractYouTubeVideoId(video?.sourceUrl);
-  const thumbnail = getVideoThumb(video);
-  const fallbackExternalUrl =
-    (video?.watch_url || video?.watchUrl || "").trim() ||
-    (video?.embed_url || video?.embedUrl || "").trim() ||
-    sourceUrl ||
-    getVideoExternalUrl(video);
-
-  const openExternalSafe = (url) => {
-    if (!url) return;
-    if (typeof openExternal === "function") {
-      openExternal(url);
-      return;
-    }
-    if (typeof window === "undefined") return;
-    if (window.NewsAppUpdater?.openExternal) {
-      window.NewsAppUpdater.openExternal(url);
-      return;
-    }
-    const opened = window.open(url, "_blank", "noopener");
-    if (!opened) {
-      window.location.href = url;
-    }
-  };
-
-  useEffect(() => {
-    setNativeFailed(false);
-    setResolvedPlaybackUrl("");
-    setResolvePending(false);
-    setResolveReason("");
-    setResolveAttempted(false);
-  }, [video?.id, video?.video_url, video?.videoUrl, video?.embed_url, video?.embedUrl, video?.url, video?.source_url, video?.sourceUrl, video?.watch_url, video?.watchUrl]);
-
-  useEffect(() => {
-    if (videoId) return;
-    if (!resolveSourceUrl) return;
-    if (resolveAttempted) return;
-    if (!nativeFailed && nativePlaybackUrl) return;
-    let cancelled = false;
-    setResolveAttempted(true);
-    setResolvePending(true);
-    setResolveReason("");
-    fetchVideoPlayback(resolveSourceUrl)
-      .then((result) => {
-        if (cancelled) return;
-        const nextUrl = String(result?.playback_url || result?.playbackUrl || "").trim();
-        const playable = Boolean(result?.playable);
-        if (playable && nextUrl) {
-          setResolvedPlaybackUrl(nextUrl);
-          setResolveReason("");
-          return;
-        }
-        setResolveReason(String(result?.reason || "stream_unavailable"));
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        setResolveReason(String(error?.message || "resolver_failed"));
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setResolvePending(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [videoId, resolveSourceUrl, resolveAttempted, nativeFailed, nativePlaybackUrl]);
-
-  useEffect(() => {
-    if (videoId || !autoPlay || !effectivePlaybackUrl || nativeFailed) return;
-    const node = nativePlayerRef.current;
-    if (!node || typeof node.play !== "function") return;
-    const attempt = node.play();
-    if (attempt && typeof attempt.catch === "function") {
-      attempt.catch(() => {
-        // Ignore autoplay restrictions.
-      });
-    }
-  }, [videoId, autoPlay, effectivePlaybackUrl, nativeFailed]);
-
-  if (videoId) {
-    return (
-      <YouTubePlayer
-        videoId={videoId}
-        title={video?.title || ""}
-        sourceUrl={fallbackExternalUrl}
-        thumbnail={thumbnail}
-        onEnded={onEnded}
-        openExternal={openExternal}
-      />
-    );
-  }
-
-  if (effectivePlaybackUrl && !nativeFailed) {
-    return (
-      <video
-        ref={nativePlayerRef}
-        src={effectivePlaybackUrl}
-        controls
-        autoPlay={autoPlay}
-        muted={muted}
-        playsInline
-        preload="metadata"
-        poster={thumbnail || undefined}
-        onEnded={onEnded || undefined}
-        onError={() => setNativeFailed(true)}
-      />
-    );
-  }
-
-  if (resolvePending) {
-    return (
-      <div className="media-player-loading">
-        <div className="media-player-loading-title">Resolving video transport...</div>
-        <div className="media-player-loading-note">
-          Checking backend playback routes for this source.
-        </div>
-      </div>
-    );
-  }
-
-  if (!videoId && !nativePlaybackUrl) {
-    return (
-      <div className="media-player-fallback" role="group" aria-label="Video fallback">
-        <div className="media-player-fallback-card">
-          <div className="media-player-fallback-thumb">
-            {thumbnail ? <img src={thumbnail} alt={video?.title || "Video thumbnail"} /> : null}
-          </div>
-          <div className="media-player-fallback-body">
-            <h5 className="media-player-fallback-title">
-              {video?.title || "Video unavailable for inline playback"}
-            </h5>
-            <div className="media-player-fallback-actions">
-              <button type="button" className="primary" onClick={() => openExternalSafe(fallbackExternalUrl)}>
-                Open source
-              </button>
-            </div>
-            <div className="media-player-fallback-note">
-              Inline playback is unavailable for this source.
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="media-player-fallback" role="group" aria-label="Video fallback">
-      <div className="media-player-fallback-card">
-        <div className="media-player-fallback-thumb">
-          {thumbnail ? <img src={thumbnail} alt={video?.title || "Video thumbnail"} /> : null}
-        </div>
-        <div className="media-player-fallback-body">
-          <h5 className="media-player-fallback-title">
-            {video?.title || "Video unavailable for inline playback"}
-          </h5>
-          <div className="media-player-fallback-actions">
-            <button type="button" className="primary" onClick={() => openExternalSafe(fallbackExternalUrl)}>
-              Open source
-            </button>
-            {fallbackExternalUrl ? (
-              <button
-                type="button"
-                onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(fallbackExternalUrl);
-                  } catch (err) {
-                    // Ignore clipboard errors.
-                  }
-                }}
-              >
-                Copy link
-              </button>
-            ) : null}
-          </div>
-          <div className="media-player-fallback-note">
-            {resolveReason
-              ? `Inline playback failed (${resolveReason}).`
-              : "Inline playback failed for this source."}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+import VideoPlaybackSurface from "./components/media/VideoPlaybackSurface";
+import RadioPlaybackSurface from "./components/media/RadioPlaybackSurface";
+import ArticleTranslationBody from "./components/translation/ArticleTranslationBody";
+import MediaTranslationPanel from "./components/translation/MediaTranslationPanel";
+import TranslationDisclosure from "./components/translation/TranslationDisclosure";
+import TranslationToggle from "./components/translation/TranslationToggle";
+import HourlyForecastCardRow from "./components/weather/HourlyForecastCardRow";
+import DailyForecastListCard from "./components/weather/DailyForecastListCard";
+import { inferPrecipType } from "./components/weather/weatherIcons.jsx";
+import { getHourlyDetailPoint } from "./components/weather/hourlyDetail.mjs";
+import useArticleTranslation from "./hooks/useArticleTranslation";
+import useMediaTranslation from "./hooks/useMediaTranslation";
+import useTimedMediaCaptions from "./hooks/useTimedMediaCaptions";
+import useTranslationStatus from "./hooks/useTranslationStatus";
+import {
+  getVideoExternalUrl,
+  getVideoThumb,
+  isResolvableRemoteVideo,
+} from "./media/videoPlaybackUtils";
+import {
+  TRANSLATION_LANGUAGE_OPTIONS,
+  formatTranslationLanguageLabel,
+  inferDefaultTranslationLanguage,
+  normalizeTranslationLanguage,
+} from "./translation/translationUtils";
 
 const FILTERS_KEY = "newsapp_saved_filters";
 const FILTERS_AUTO_KEY = "newsapp_filters_auto";
@@ -560,6 +160,21 @@ const INSTALLER_ASSETS = [
   { id: "windows", label: "Windows Installer (.exe)", file: "CurrentScope-Setup.exe" },
   { id: "android", label: "Android APK", file: "CurrentScope.apk" },
   { id: "linux", label: "Linux Installer (.deb)", file: "CurrentScope.deb" },
+];
+
+const INSTALLER_HELPER_ASSETS = [
+  {
+    id: "linux-script",
+    label: "Linux helper script",
+    href: "/installers/install-linux.sh",
+    download: "install-linux.sh",
+  },
+  {
+    id: "installer-notes",
+    label: "Installer notes",
+    href: "/installers/README.txt",
+    download: "CurrentScope-installers.txt",
+  },
 ];
 const UPDATE_PLATFORM_LABELS = {
   windows: "Windows",
@@ -703,6 +318,7 @@ const THEME_VARIABLES = {
   accentWarm: "--accent-warm",
   border: "--border",
 };
+
 const DEFAULT_SETTINGS = {
   theme: "light",
   themePreset: "current-scope",
@@ -749,23 +365,44 @@ const DEFAULT_SETTINGS = {
   rememberPopoutState: false,
   rememberVideoPopoutOpen: false,
   rememberRadioPopoutOpen: false,
+  translationTargetLanguage: "",
 };
 
 function readSettings() {
-  if (typeof window === "undefined") return { ...DEFAULT_SETTINGS };
+  if (typeof window === "undefined") {
+    return {
+      ...DEFAULT_SETTINGS,
+      translationTargetLanguage: inferDefaultTranslationLanguage(),
+    };
+  }
   let raw = "";
   try {
     raw = window.localStorage.getItem(SETTINGS_KEY) || "";
   } catch (err) {
     // Storage access can be blocked in some privacy contexts.
-    return { ...DEFAULT_SETTINGS };
+    return {
+      ...DEFAULT_SETTINGS,
+      translationTargetLanguage: inferDefaultTranslationLanguage(),
+    };
   }
-  if (!raw) return { ...DEFAULT_SETTINGS };
+  if (!raw) {
+    return {
+      ...DEFAULT_SETTINGS,
+      translationTargetLanguage: inferDefaultTranslationLanguage(),
+    };
+  }
   try {
     const data = JSON.parse(raw);
-    return { ...DEFAULT_SETTINGS, ...data };
+    const merged = { ...DEFAULT_SETTINGS, ...data };
+    if (!normalizeTranslationLanguage(merged.translationTargetLanguage)) {
+      merged.translationTargetLanguage = inferDefaultTranslationLanguage();
+    }
+    return merged;
   } catch (err) {
-    return { ...DEFAULT_SETTINGS };
+    return {
+      ...DEFAULT_SETTINGS,
+      translationTargetLanguage: inferDefaultTranslationLanguage(),
+    };
   }
 }
 
@@ -970,6 +607,36 @@ function compactText(value) {
   return normalizeText(value).replace(/[^a-z0-9]+/g, "");
 }
 
+function safeWeatherTimestamp(row) {
+  if (!row || typeof row !== "object") return 0;
+  const value =
+    row.weather_time ||
+    row.weatherTime ||
+    row.observed_at ||
+    row.observedAt ||
+    row.fetched_at ||
+    row.fetchedAt ||
+    row.created_at ||
+    row.createdAt ||
+    "";
+  const ts = Date.parse(String(value || ""));
+  return Number.isFinite(ts) ? ts : 0;
+}
+
+function formatWeatherDayLabel(dateISO) {
+  const ts = Date.parse(String(dateISO || ""));
+  if (!Number.isFinite(ts)) return "Day";
+  const dayStart = new Date(ts);
+  dayStart.setHours(0, 0, 0, 0);
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const diffDays = Math.round((dayStart.getTime() - todayStart.getTime()) / 86400000);
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Tomorrow";
+  if (diffDays === -1) return "Yesterday";
+  return dayStart.toLocaleDateString([], { weekday: "short" });
+}
+
 function normalizeTooltipText(value) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (!text) return "";
@@ -1008,11 +675,14 @@ function applyAutoTooltips(root) {
   );
   nodes.forEach((node) => {
     if (!node || typeof node.hasAttribute !== "function") return;
-    if (node.hasAttribute("data-tooltip")) return;
+    if (node.getAttribute("data-tooltip-applied") === "1") return;
     if (node.closest(".read-only-content")) return;
     const label = deriveTooltipLabel(node);
     if (!label) return;
-    node.setAttribute("data-tooltip", label);
+    if (!node.getAttribute("data-tooltip")) {
+      node.setAttribute("data-tooltip", label);
+    }
+    node.setAttribute("data-tooltip-applied", "1");
   });
 }
 
@@ -1403,6 +1073,12 @@ export default function App() {
       !initialVideoPopoutOpen
   );
   const [settings, setSettings] = useState(initialSettings);
+  const translationTargetLanguage =
+    normalizeTranslationLanguage(settings.translationTargetLanguage) ||
+    inferDefaultTranslationLanguage();
+  const translationTargetLanguageLabel = formatTranslationLanguageLabel(
+    translationTargetLanguage
+  );
   const [backendUrlDraft, setBackendUrlDraft] = useState(
     () => initialSettings.backendUrl || ""
   );
@@ -1456,6 +1132,10 @@ export default function App() {
   const [radios, setRadios] = useState([]);
   const [selectedRadio, setSelectedRadio] = useState(() => readLastRadioStation());
   const [weatherRows, setWeatherRows] = useState([]);
+  const [hourlyForecastRows, setHourlyForecastRows] = useState([]);
+  const [dailyForecastRows, setDailyForecastRows] = useState([]);
+  const [hourlyForecastLoading, setHourlyForecastLoading] = useState(false);
+  const [hourlyForecastError, setHourlyForecastError] = useState("");
   const [weatherError, setWeatherError] = useState("");
   const [weatherRetryBlocked, setWeatherRetryBlocked] = useState(false);
   const [deviceWeatherLocation, setDeviceWeatherLocation] = useState(null);
@@ -1487,6 +1167,8 @@ export default function App() {
   const [carouselPaused, setCarouselPaused] = useState(false);
   const [filterSource, setFilterSource] = useState("");
   const [filterProvider, setFilterProvider] = useState("");
+  const [filterCountry, setFilterCountry] = useState("");
+  const [filterLanguage, setFilterLanguage] = useState("");
   const [sortKey, setSortKey] = useState("publishedAt");
   const [sortDir, setSortDir] = useState("desc");
   const [autoApplyFilters, setAutoApplyFilters] = useState(readAutoApply);
@@ -1504,6 +1186,8 @@ export default function App() {
   const [weatherLoading, setWeatherLoading] = useState(false);
   const [videoFilterSource, setVideoFilterSource] = useState("");
   const [videoFilterProvider, setVideoFilterProvider] = useState("");
+  const [videoFilterCountry, setVideoFilterCountry] = useState("");
+  const [videoFilterLanguage, setVideoFilterLanguage] = useState("");
   const [videoStartDate, setVideoStartDate] = useState("");
   const [videoEndDate, setVideoEndDate] = useState("");
   const [videoSortKey, setVideoSortKey] = useState("published_at");
@@ -1517,6 +1201,10 @@ export default function App() {
   const [weatherSortKey, setWeatherSortKey] = useState("weather_time");
   const [weatherSortDir, setWeatherSortDir] = useState("desc");
   const [weatherChartLocation, setWeatherChartLocation] = useState("auto");
+  const [forecastSelectedHourIndex, setForecastSelectedHourIndex] = useState(0);
+  const [forecastSelectedHourTs, setForecastSelectedHourTs] = useState(null);
+  const [forecastAutoScroll, setForecastAutoScroll] = useState(false);
+  const [forecastExpandedDayIndex, setForecastExpandedDayIndex] = useState(null);
   const [radarLoading, setRadarLoading] = useState(false);
   const [radarFrames, setRadarFrames] = useState([]);
   const [radarFrameIndex, setRadarFrameIndex] = useState(-1);
@@ -1543,8 +1231,10 @@ export default function App() {
   const [showFeaturesModal, setShowFeaturesModal] = useState(false);
   const [featuresOptOut, setFeaturesOptOut] = useState(false);
   const [readOnlyOpen, setReadOnlyOpen] = useState(false);
+  const [readOnlyArticle, setReadOnlyArticle] = useState(null);
   const [readOnlyHtml, setReadOnlyHtml] = useState("");
   const [readOnlyTitle, setReadOnlyTitle] = useState("");
+  const [readOnlySummary, setReadOnlySummary] = useState("");
   const [readOnlyUrl, setReadOnlyUrl] = useState("");
   const [readOnlyLoading, setReadOnlyLoading] = useState(false);
   const [readOnlyError, setReadOnlyError] = useState("");
@@ -1556,15 +1246,17 @@ export default function App() {
   const [sharePayload, setSharePayload] = useState(null);
   const [videoModalOpen, setVideoModalOpen] = useState(false);
   const [videoModalVideo, setVideoModalVideo] = useState(null);
+  const [hourlyDetailOpen, setHourlyDetailOpen] = useState(false);
+  const [hourlyDetailPoint, setHourlyDetailPoint] = useState(null);
   const [weatherTrendOpen, setWeatherTrendOpen] = useState(false);
   const [weatherTrendGroup, setWeatherTrendGroup] = useState(null);
   const [weatherTrendPointTs, setWeatherTrendPointTs] = useState(null);
+  const [weatherChartPointTs, setWeatherChartPointTs] = useState(null);
 
   useEffect(() => {
     const optOut = readFeaturesOptOut();
-    const seenVersion = readFeaturesSeenVersion();
     setFeaturesOptOut(optOut);
-    if (!optOut && seenVersion !== APP_VERSION) {
+    if (!optOut) {
       setShowFeaturesModal(true);
     }
   }, []);
@@ -1607,6 +1299,7 @@ export default function App() {
   const videoFetchAbortRef = useRef(null);
   const radioFetchAbortRef = useRef(null);
   const weatherFetchAbortRef = useRef(null);
+  const hourlyForecastFetchAbortRef = useRef(null);
   const installerFetchAbortRef = useRef(null);
   const installerManifestMissingRef = useRef("");
   const loggedNetworkIssuesRef = useRef(new Set());
@@ -1615,11 +1308,30 @@ export default function App() {
   const radarMapContainerRef = useRef(null);
   const radarMapRef = useRef(null);
   const radarMapsApiRef = useRef(null);
+  const radarBaseLayerRef = useRef(null);
   const radarOverlayLayerRef = useRef(null);
   const radarMapListenersRef = useRef([]);
   const radarOverlayErrorRef = useRef(0);
   const radarOverlayTimeoutRef = useRef(null);
   const radarFetchBusyRef = useRef(false);
+  const feelInteractionStateRef = useRef({
+    hourly: false,
+    daily: false,
+    radar: false,
+    weather: false,
+  });
+  const feelInteractionTimerRef = useRef({});
+  const deferredFeelUpdatesRef = useRef({
+    weather: null,
+    hourly: null,
+    radarRefreshPending: false,
+  });
+  const deviceWeatherWatchIdRef = useRef(null);
+  const deviceWeatherPermissionStateRef = useRef("");
+  const deviceWeatherAutoPromptedRef = useRef(false);
+  const deviceWeatherAutoRequestTsRef = useRef(0);
+  const deviceWeatherLastCoordRef = useRef(null);
+  const deviceWeatherLastUpdateRef = useRef(0);
   const [radioIsPlaying, setRadioIsPlaying] = useState(false);
   const pendingRadioAutoplayRef = useRef(false);
   const readOnlyUtteranceRef = useRef(null);
@@ -1629,6 +1341,7 @@ export default function App() {
   const readOnlyActiveFragmentRef = useRef(-1);
   const readOnlyFollowTsRef = useRef(0);
   const appVersion = nativeVersion || APP_VERSION;
+  const translationStatus = useTranslationStatus();
 
   function logIssueOnce(key, message, error) {
     if (!import.meta.env.DEV) return;
@@ -1642,6 +1355,86 @@ export default function App() {
       console.warn(message);
     }
   }
+
+  function isFeelInteractionActive(section) {
+    return Boolean(feelInteractionStateRef.current?.[section]);
+  }
+
+  function isAnyFeelInteractionActive() {
+    const state = feelInteractionStateRef.current || {};
+    return Boolean(state.hourly || state.daily || state.radar || state.weather);
+  }
+
+  function flushDeferredFeelUpdates() {
+    if (isAnyFeelInteractionActive()) return;
+    const pending = deferredFeelUpdatesRef.current || {};
+    if (pending.weather) {
+      const payload = pending.weather;
+      pending.weather = null;
+      if (payload.kind === "success") {
+        setWeatherRetryBlocked(false);
+        setWeatherRows(Array.isArray(payload.rows) ? payload.rows : []);
+        if (payload.updatedAt) {
+          setWeatherUpdatedAt(payload.updatedAt);
+        }
+        setWeatherError("");
+      } else if (payload.kind === "error") {
+        setWeatherError(payload.message || "Unable to load weather.");
+      }
+    }
+    if (pending.hourly) {
+      const payload = pending.hourly;
+      pending.hourly = null;
+      setHourlyForecastRows(Array.isArray(payload.hourlyRows) ? payload.hourlyRows : []);
+      setDailyForecastRows(Array.isArray(payload.dailyRows) ? payload.dailyRows : []);
+      setHourlyForecastError(payload.error || "");
+    }
+    if (pending.radarRefreshPending) {
+      pending.radarRefreshPending = false;
+      setRadarRefreshNonce((prev) => prev + 1);
+    }
+  }
+
+  function setFeelInteraction(section, isActive) {
+    if (!section || !feelInteractionStateRef.current) return;
+    const timers = feelInteractionTimerRef.current || {};
+    const clearTimer = () => {
+      const timerId = timers[section];
+      if (!timerId) return;
+      window.clearTimeout(timerId);
+      timers[section] = null;
+    };
+    if (isActive) {
+      clearTimer();
+      feelInteractionStateRef.current[section] = true;
+      timers[section] = window.setTimeout(() => {
+        timers[section] = null;
+        feelInteractionStateRef.current[section] = false;
+        flushDeferredFeelUpdates();
+      }, 1200);
+      return;
+    }
+    clearTimer();
+    timers[section] = window.setTimeout(() => {
+      timers[section] = null;
+      feelInteractionStateRef.current[section] = false;
+      flushDeferredFeelUpdates();
+    }, 220);
+  }
+
+  useEffect(
+    () => () => {
+      const timers = feelInteractionTimerRef.current || {};
+      Object.keys(timers).forEach((key) => {
+        if (timers[key]) {
+          window.clearTimeout(timers[key]);
+        }
+      });
+      feelInteractionTimerRef.current = {};
+    },
+    []
+  );
+
   const updatePlatform = isAndroidApp
     ? "android"
     : isElectron
@@ -1776,10 +1569,7 @@ export default function App() {
     loadHeadlines();
     checkBackendConnection({ notify: false });
     if (lastSearch) {
-      loadArticles(lastSearch, {
-        source: (filterSource || "").trim() || undefined,
-        provider: (filterProvider || "").trim() || undefined,
-      });
+      loadArticles(lastSearch, buildArticleFetchOptions());
     }
   }
 
@@ -1817,50 +1607,19 @@ export default function App() {
     }
   }
 
-  function renderVideoPlayerSurface(video, { onEnded = null, autoPlay = true, muted = true } = {}) {
-    if (!video) return <div className="results-empty">No videos found.</div>;
-    return (
-      <InlineVideoPlayer
-        video={video}
-        onEnded={onEnded}
-        autoPlay={autoPlay}
-        muted={muted}
-        openExternal={openExternal}
-      />
-    );
-  }
-
-  function renderRadioPlayback(radio) {
-    if (!radio?.stream_url) {
-      return <div className="results-empty">No stream URL available for this station.</div>;
+  function extractReadableText(contentNode) {
+    if (!contentNode) return "";
+    const blocks = Array.from(
+      contentNode.querySelectorAll("p,li,blockquote,pre,h1,h2,h3,h4,h5,h6")
+    )
+      .map((node) => node.textContent?.replace(/\s+/g, " ").trim() || "")
+      .filter(Boolean);
+    if (blocks.length) {
+      return blocks.join("\n\n");
     }
-    return (
-      <>
-        <audio
-          ref={radioAudioRef}
-          controls
-          preload="none"
-          src={radio.stream_url}
-          onError={() => {
-            setRadioIsPlaying(false);
-            setMessage(
-              "Audio playback failed. Some stations require HTTPS, a compatible codec, or an external player."
-            );
-          }}
-          onPlay={() => setRadioIsPlaying(true)}
-          onPause={() => setRadioIsPlaying(false)}
-          onEnded={() => setRadioIsPlaying(false)}
-        />
-        {typeof window !== "undefined" &&
-        window.location?.protocol === "https:" &&
-        String(radio.stream_url || "").toLowerCase().startsWith("http://") ? (
-          <div className="radio-warning">
-            This station stream is HTTP and may be blocked by your browser on HTTPS. Use “Stream URL”
-            to open it externally, or enable HTTPS-only streams in the backend radio settings.
-          </div>
-        ) : null}
-      </>
-    );
+    return (contentNode.textContent || "")
+      .replace(/\s+/g, " ")
+      .trim();
   }
 
   function parseReadableHtml(html) {
@@ -1886,7 +1645,7 @@ export default function App() {
       contentNode.querySelectorAll("script").forEach((node) => node.remove());
     }
     const bodyHtml = contentNode ? contentNode.innerHTML : "";
-    const bodyText = contentNode ? contentNode.textContent?.trim() || "" : "";
+    const bodyText = contentNode ? extractReadableText(contentNode) : "";
     return {
       title,
       sourceUrl,
@@ -1939,11 +1698,14 @@ export default function App() {
       setReadOnlyScrollY(scrollTop);
     }
     setReadOnlyOpen(true);
+    setReadOnlyArticle(article || null);
     setReadOnlyTitle(article?.title || "Read-only");
+    setReadOnlySummary(buildArticleSummaryText(article));
     setReadOnlyUrl(url);
     setReadOnlyError("");
     setReadOnlyHtml("");
     setReadOnlyText("");
+    readOnlyTranslationState.setMode("original");
     setReadOnlyStatus("");
     stopReadOnlyReading("");
     resetReadOnlyFragments();
@@ -2124,10 +1886,13 @@ export default function App() {
 
   const closeReadOnly = () => {
     setReadOnlyOpen(false);
+    setReadOnlyArticle(null);
     setReadOnlyHtml("");
+    setReadOnlySummary("");
     setReadOnlyError("");
     setReadOnlyLoading(false);
     setReadOnlyText("");
+    readOnlyTranslationState.setMode("original");
     setReadOnlyStatus("");
     stopReadOnlyReading("");
     resetReadOnlyFragments();
@@ -2141,6 +1906,7 @@ export default function App() {
 
   const openVideoModal = (video) => {
     if (!video) return;
+    videoModalCaptionState.setMode("original");
     setVideoModalVideo(video);
     setVideoModalOpen(true);
   };
@@ -2148,6 +1914,7 @@ export default function App() {
   const closeVideoModal = () => {
     setVideoModalOpen(false);
     setVideoModalVideo(null);
+    videoModalCaptionState.setMode("original");
   };
 
   const openWeatherTrend = (group) => {
@@ -2213,10 +1980,12 @@ export default function App() {
   };
 
   const dismissFeaturesModal = () => {
+    writeFeaturesOptOut(Boolean(featuresOptOut));
     if (featuresOptOut) {
-      writeFeaturesOptOut(true);
+      writeFeaturesSeenVersion(APP_VERSION);
+    } else {
+      writeFeaturesSeenVersion("");
     }
-    writeFeaturesSeenVersion(APP_VERSION);
     setShowFeaturesModal(false);
   };
 
@@ -2340,7 +2109,9 @@ export default function App() {
         if (cancelled) return;
         const frames = parseRainViewerFrames(data);
         if (!frames.length) {
-          setRadarError("Radar frames were unavailable.");
+          if (!backgroundRefresh) {
+            setRadarError("Radar frames were unavailable.");
+          }
           return;
         }
         setRadarFrames(frames);
@@ -2351,7 +2122,9 @@ export default function App() {
       })
       .catch((err) => {
         if (cancelled) return;
-        setRadarError(`Radar unavailable: ${err?.message || err}`);
+        if (!backgroundRefresh) {
+          setRadarError(`Radar unavailable: ${err?.message || err}`);
+        }
       })
       .finally(() => {
         if (cancelled) return;
@@ -2391,17 +2164,14 @@ export default function App() {
       clearTimeout(searchDebounceRef.current);
     }
     searchDebounceRef.current = setTimeout(() => {
-      loadArticles(search, {
-        source: (filterSource || "").trim() || undefined,
-        provider: (filterProvider || "").trim() || undefined,
-      });
+      loadArticles(search, buildArticleFetchOptions());
     }, 450);
     return () => {
       if (searchDebounceRef.current) {
         clearTimeout(searchDebounceRef.current);
       }
     };
-  }, [search, filterSource, filterProvider]);
+  }, [search, filterSource, filterProvider, filterCountry, filterLanguage]);
 
   useEffect(() => {
     if (!videoHasSearched) return;
@@ -2450,6 +2220,7 @@ export default function App() {
 
   useEffect(() => {
     return () => {
+      clearDeviceWeatherWatch();
       const refs = [
         articleFetchAbortRef,
         videoFetchAbortRef,
@@ -2520,15 +2291,9 @@ export default function App() {
     if (nextView === "settings") {
       setView("dashboard");
       openAppMenu();
-      if (typeof window !== "undefined") {
-        window.location.hash = "#settings";
-      }
       return;
     }
     setView(nextView);
-    if (typeof window !== "undefined") {
-      window.location.hash = "";
-    }
   };
 
   const openAppMenu = () => {
@@ -2553,9 +2318,6 @@ export default function App() {
     if (view === "settings") {
       setView("dashboard");
       openAppMenu();
-      if (typeof window !== "undefined") {
-        window.location.hash = "#settings";
-      }
     }
   }, [view]);
 
@@ -2567,6 +2329,16 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined" || typeof window.history?.replaceState !== "function") {
+      return;
+    }
+    const nextHash = appMenuOpen || Boolean(appSettingsSection) ? "#settings" : "";
+    const { pathname, search, hash } = window.location;
+    if (hash === nextHash) return;
+    window.history.replaceState(null, "", `${pathname}${search}${nextHash}`);
+  }, [appMenuOpen, appSettingsSection]);
+
+  useEffect(() => {
     if (typeof window === "undefined") return;
     const permissionsApi = window.navigator?.permissions;
     if (!permissionsApi?.query) return;
@@ -2574,31 +2346,57 @@ export default function App() {
     let permissionStatus = null;
     const syncPermissionState = (state) => {
       if (cancelled) return;
+      const previousState = deviceWeatherPermissionStateRef.current;
+      deviceWeatherPermissionStateRef.current = String(state || "");
       if (state === "granted") {
+        deviceWeatherAutoPromptedRef.current = false;
         setDeviceWeatherLocationStatus((prev) => {
           if (prev.state === "ready" || prev.state === "requesting") return prev;
           return {
             state: "idle",
-            label: "Location permission granted. Tap \"Use my location\" to load local weather.",
+            label:
+              "Location permission granted. Local weather will refresh automatically while auto refresh is enabled.",
           };
         });
+        if (activeTab === "feel" && settings.autoRefreshWeather) {
+          const now = Date.now();
+          if (now - deviceWeatherAutoRequestTsRef.current > 10000) {
+            deviceWeatherAutoRequestTsRef.current = now;
+            requestDeviceWeatherLocation({ force: true });
+          }
+          startDeviceWeatherWatch();
+        }
         return;
       }
       if (state === "denied") {
+        clearDeviceWeatherWatch();
+        deviceWeatherAutoPromptedRef.current = false;
         setDeviceWeatherLocation(null);
         setDeviceWeatherLocationStatus({
           state: "denied",
-          label: "Device location is blocked for this site. Enable it in browser settings and retry.",
+          label: "Device location is blocked for this site. Enable it in browser settings to restore local weather.",
         });
         return;
+      }
+      if (previousState !== "prompt") {
+        deviceWeatherAutoPromptedRef.current = false;
       }
       setDeviceWeatherLocationStatus((prev) => {
         if (prev.state === "ready" || prev.state === "requesting") return prev;
         return {
           state: "idle",
-          label: "Location access is available. Allow the prompt to enable local weather.",
+          label: "Location access is required for local weather. The browser will request permission automatically.",
         };
       });
+      if (activeTab === "feel" && settings.autoRefreshWeather) {
+        if (deviceWeatherAutoPromptedRef.current) return;
+        const now = Date.now();
+        if (now - deviceWeatherAutoRequestTsRef.current > 45000) {
+          deviceWeatherAutoPromptedRef.current = true;
+          deviceWeatherAutoRequestTsRef.current = now;
+          requestDeviceWeatherLocation({ force: true });
+        }
+      }
     };
 
     permissionsApi
@@ -2619,7 +2417,29 @@ export default function App() {
         permissionStatus.onchange = null;
       }
     };
-  }, []);
+  }, [activeTab, settings.autoRefreshWeather]);
+
+  useEffect(() => {
+    if (activeTab !== "feel" || !settings.autoRefreshWeather) {
+      clearDeviceWeatherWatch();
+      return;
+    }
+    const permissionState = deviceWeatherPermissionStateRef.current;
+    if (permissionState === "denied") return;
+    if (deviceWeatherLocationStatus.state === "requesting") return;
+    if (deviceWeatherLocationStatus.state === "ready") {
+      startDeviceWeatherWatch();
+      return;
+    }
+    const now = Date.now();
+    if (now - deviceWeatherAutoRequestTsRef.current < 45000) return;
+    if (permissionState === "prompt" && deviceWeatherAutoPromptedRef.current) return;
+    if (permissionState === "prompt") {
+      deviceWeatherAutoPromptedRef.current = true;
+    }
+    deviceWeatherAutoRequestTsRef.current = now;
+    requestDeviceWeatherLocation({ force: true });
+  }, [activeTab, settings.autoRefreshWeather, deviceWeatherLocationStatus.state]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined") return;
@@ -2989,9 +2809,15 @@ export default function App() {
       .trim();
   }
 
+  function buildArticleSummaryText(article) {
+    return stripHtml(article?.description || article?.content || "");
+  }
+
   function applyFilters(saved) {
     setFilterSource(saved.filterSource || "");
     setFilterProvider(saved.filterProvider || "");
+    setFilterCountry(saved.filterCountry || "");
+    setFilterLanguage(saved.filterLanguage || "");
     setSortKey(saved.sortKey || "publishedAt");
     setSortDir(saved.sortDir || "desc");
   }
@@ -3000,6 +2826,8 @@ export default function App() {
     writeSavedFilters({
       filterSource,
       filterProvider,
+      filterCountry,
+      filterLanguage,
       sortKey,
       sortDir,
     });
@@ -3019,6 +2847,8 @@ export default function App() {
   function clearFilters() {
     setFilterSource("");
     setFilterProvider("");
+    setFilterCountry("");
+    setFilterLanguage("");
     setSortKey("publishedAt");
     setSortDir("desc");
   }
@@ -3101,6 +2931,8 @@ export default function App() {
         search: query,
         source: options.source,
         provider: options.provider,
+        country: options.country,
+        language: options.language,
         limit: RESULTS_LIMIT,
       }, {
         signal: controller ? controller.signal : undefined,
@@ -3135,6 +2967,8 @@ export default function App() {
         search: query || "all",
         source: options.source,
         provider: options.provider,
+        country: options.country,
+        language: options.language,
         start_date: options.start_date,
         end_date: options.end_date,
         sort_by: options.sort_by || "published_at",
@@ -3215,6 +3049,8 @@ export default function App() {
 
   async function loadWeatherData(q = null, options = {}) {
     const query = (q || "").trim();
+    const shouldDeferApply =
+      Boolean(options?.silent) && activeTab === "feel" && isAnyFeelInteractionActive();
     try {
       weatherFetchAbortRef.current?.abort?.();
     } catch (err) {
@@ -3222,7 +3058,9 @@ export default function App() {
     }
     const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
     weatherFetchAbortRef.current = controller;
-    setWeatherLoading(true);
+    if (!options?.silent) {
+      setWeatherLoading(true);
+    }
     setWeatherError("");
     try {
       const searchQuery = query || "all";
@@ -3243,12 +3081,28 @@ export default function App() {
         signal: controller ? controller.signal : undefined,
       });
       if (weatherFetchAbortRef.current !== controller) return;
+      if (shouldDeferApply) {
+        deferredFeelUpdatesRef.current.weather = {
+          kind: "success",
+          rows: data || [],
+          updatedAt: formatTime(),
+        };
+        return;
+      }
       setWeatherRetryBlocked(false);
       setWeatherRows(data || []);
       setWeatherUpdatedAt(formatTime());
+      setWeatherError("");
     } catch (err) {
       if (err?.name === "AbortError") return;
       const issue = classifyRequestError(err, "Unable to load weather.");
+      if (shouldDeferApply) {
+        deferredFeelUpdatesRef.current.weather = {
+          kind: "error",
+          message: issue.userMessage || "Unable to load weather.",
+        };
+        return;
+      }
       if (issue.kind === "validation" || issue.kind === "auth") {
         setWeatherRetryBlocked(true);
       }
@@ -3273,13 +3127,144 @@ export default function App() {
     }
   }
 
+  async function loadHourlyForecastData(options = {}) {
+    const target = hourlyForecastTarget;
+    const shouldDeferApply =
+      Boolean(options?.silent) &&
+      activeTab === "feel" &&
+      (isFeelInteractionActive("hourly") ||
+        isFeelInteractionActive("daily") ||
+        isFeelInteractionActive("radar"));
+    const latitude = Number(target?.latitude);
+    const longitude = Number(target?.longitude);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      setHourlyForecastRows([]);
+      setDailyForecastRows([]);
+      setHourlyForecastError("Hourly forecast location is unavailable.");
+      return;
+    }
+    try {
+      hourlyForecastFetchAbortRef.current?.abort?.();
+    } catch (err) {
+      // ignore
+    }
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    hourlyForecastFetchAbortRef.current = controller;
+    if (!options.silent) {
+      setHourlyForecastLoading(true);
+    }
+    setHourlyForecastError("");
+    try {
+      const baseParams = {
+        latitude,
+        longitude,
+        search: target?.location_name || target?.label || "",
+        country: target?.country_code || "",
+      };
+      const signal = controller ? controller.signal : undefined;
+      const [hourlyResult, dailyResult] = await Promise.allSettled([
+        fetchWeatherHourly(
+          {
+            ...baseParams,
+            hours: 12,
+          },
+          { signal }
+        ),
+        fetchWeatherDaily(
+          {
+            ...baseParams,
+            days: 7,
+          },
+          { signal }
+        ),
+      ]);
+      if (hourlyForecastFetchAbortRef.current !== controller) return;
+      if (hourlyResult.status !== "fulfilled") {
+        throw hourlyResult.reason;
+      }
+      const rows = Array.isArray(hourlyResult.value?.hourly) ? hourlyResult.value.hourly : [];
+      const nextError = rows.length
+        ? ""
+        : "Hourly weather provider returned no forecast points.";
+      let dailyRows = [];
+      if (dailyResult.status === "fulfilled") {
+        dailyRows = Array.isArray(dailyResult.value?.daily) ? dailyResult.value.daily : [];
+      } else {
+        const dailyIssue = classifyRequestError(
+          dailyResult.reason,
+          "Unable to load daily forecast."
+        );
+        logIssueOnce(
+          `daily:${dailyIssue.status || dailyIssue.kind}`,
+          `[WeatherDaily] ${dailyIssue.technicalMessage || "Daily weather request failed."}`,
+          dailyResult.reason
+        );
+      }
+      if (shouldDeferApply) {
+        deferredFeelUpdatesRef.current.hourly = {
+          hourlyRows: rows,
+          dailyRows,
+          error: nextError,
+        };
+        return;
+      }
+      setHourlyForecastRows(rows);
+      setDailyForecastRows(dailyRows);
+      setHourlyForecastError(nextError);
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      const issue = classifyRequestError(err, "Unable to load hourly forecast.");
+      if (shouldDeferApply) {
+        deferredFeelUpdatesRef.current.hourly = {
+          hourlyRows: [],
+          dailyRows: [],
+          error: issue.userMessage || "Unable to load hourly forecast.",
+        };
+        return;
+      }
+      setHourlyForecastRows([]);
+      setDailyForecastRows([]);
+      setHourlyForecastError(issue.userMessage || "Unable to load hourly forecast.");
+      logIssueOnce(
+        `hourly:${issue.status || issue.kind}`,
+        `[WeatherHourly] ${issue.technicalMessage || "Hourly weather request failed."}`,
+        err
+      );
+    } finally {
+      if (hourlyForecastFetchAbortRef.current === controller) {
+        hourlyForecastFetchAbortRef.current = null;
+        setHourlyForecastLoading(false);
+      }
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      try {
+        hourlyForecastFetchAbortRef.current?.abort?.();
+      } catch (err) {
+        // ignore
+      }
+      hourlyForecastFetchAbortRef.current = null;
+    };
+  }, []);
+
   const buildVideoFetchOptions = () => ({
     source: (videoFilterSource || "").trim() || undefined,
     provider: (videoFilterProvider || "").trim() || undefined,
+    country: (videoFilterCountry || "").trim() || undefined,
+    language: (videoFilterLanguage || "").trim() || undefined,
     start_date: videoStartDate ? `${videoStartDate} 00:00:00` : undefined,
     end_date: videoEndDate ? `${videoEndDate} 23:59:59` : undefined,
     sort_by: videoSortKey,
     sort_dir: videoSortDir,
+  });
+
+  const buildArticleFetchOptions = () => ({
+    source: (filterSource || "").trim() || undefined,
+    provider: (filterProvider || "").trim() || undefined,
+    country: (filterCountry || "").trim() || undefined,
+    language: (filterLanguage || "").trim() || undefined,
   });
 
   const buildRadioFetchOptions = () => ({
@@ -3310,6 +3295,8 @@ export default function App() {
     setVideoSearch("");
     setVideoFilterSource("");
     setVideoFilterProvider("");
+    setVideoFilterCountry("");
+    setVideoFilterLanguage("");
     setVideoStartDate("");
     setVideoEndDate("");
     setVideoSortKey("published_at");
@@ -3364,6 +3351,98 @@ export default function App() {
     loadWeatherData("all");
   }
 
+  function clearDeviceWeatherWatch() {
+    if (typeof window === "undefined") return;
+    const geo = window.navigator?.geolocation;
+    const watchId = deviceWeatherWatchIdRef.current;
+    if (!geo?.clearWatch || watchId === null || watchId === undefined) {
+      deviceWeatherWatchIdRef.current = null;
+      return;
+    }
+    try {
+      geo.clearWatch(watchId);
+    } catch (err) {
+      // Ignore watch clear errors.
+    }
+    deviceWeatherWatchIdRef.current = null;
+  }
+
+  function applyDeviceWeatherLocation(position, { triggerRefresh = false, tracking = false } = {}) {
+    const coords = position?.coords || position || {};
+    const latitude = Number(coords.latitude);
+    const longitude = Number(coords.longitude);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return false;
+    }
+
+    const now = Date.now();
+    const previous = deviceWeatherLastCoordRef.current;
+    const movedKm = previous
+      ? haversineKm(previous.latitude, previous.longitude, latitude, longitude)
+      : Number.POSITIVE_INFINITY;
+    const lastTs = Number(deviceWeatherLastUpdateRef.current) || 0;
+    const updateDue = !Number.isFinite(movedKm) || movedKm >= 0.08 || now - lastTs >= 20000;
+    if (!updateDue) {
+      return true;
+    }
+
+    deviceWeatherLastCoordRef.current = { latitude, longitude };
+    deviceWeatherLastUpdateRef.current = now;
+    setDeviceWeatherLocation({
+      latitude,
+      longitude,
+      accuracy: coords.accuracy,
+    });
+    setWeatherChartLocation("auto");
+    setDeviceWeatherLocationStatus({
+      state: "ready",
+      label: tracking ? "Device location tracking active." : "Device location enabled.",
+    });
+
+    if (triggerRefresh) {
+      const query = (lastWeatherSearch || weatherSearch || "all").trim() || "all";
+      loadWeatherData(query, buildWeatherFetchOptions());
+    }
+    return true;
+  }
+
+  function startDeviceWeatherWatch({ forceRestart = false } = {}) {
+    if (typeof window === "undefined") return;
+    if (!settings.autoRefreshWeather) return;
+    const geo = window.navigator?.geolocation;
+    if (!geo?.watchPosition) return;
+    if (forceRestart) {
+      clearDeviceWeatherWatch();
+    }
+    if (deviceWeatherWatchIdRef.current !== null && deviceWeatherWatchIdRef.current !== undefined) {
+      return;
+    }
+    try {
+      deviceWeatherWatchIdRef.current = geo.watchPosition(
+        (position) => {
+          applyDeviceWeatherLocation(position, { tracking: true, triggerRefresh: true });
+        },
+        (err) => {
+          if (err?.code === 1) {
+            clearDeviceWeatherWatch();
+            setDeviceWeatherLocationStatus({
+              state: "denied",
+              label:
+                "Device location tracking is blocked. Enable location access in your browser to restore local weather.",
+            });
+          }
+        },
+        {
+          enableHighAccuracy: false,
+          timeout: 20000,
+          maximumAge: 30000,
+        }
+      );
+    } catch (err) {
+      deviceWeatherWatchIdRef.current = null;
+    }
+  }
+
   function requestDeviceWeatherLocation({ force = false } = {}) {
     if (typeof window === "undefined") return;
     if (window.isSecureContext === false) {
@@ -3386,7 +3465,10 @@ export default function App() {
       });
       return;
     }
-    if (!force && deviceWeatherLocationStatus.state !== "idle") return;
+    if (!force && (deviceWeatherLocationStatus.state === "requesting" || deviceWeatherLocationStatus.state === "ready")) {
+      return;
+    }
+    if (force && deviceWeatherLocationStatus.state === "requesting") return;
     setWeatherRetryBlocked(false);
     setWeatherError("");
 
@@ -3398,10 +3480,11 @@ export default function App() {
 
       window.navigator.geolocation.getCurrentPosition(
         (pos) => {
-          const coords = pos?.coords || {};
-          const latitude = Number(coords.latitude);
-          const longitude = Number(coords.longitude);
-          if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+          const ok = applyDeviceWeatherLocation(pos, {
+            triggerRefresh: true,
+            tracking: false,
+          });
+          if (!ok) {
             setDeviceWeatherLocation(null);
             setDeviceWeatherLocationStatus({
               state: "error",
@@ -3409,22 +3492,13 @@ export default function App() {
             });
             return;
           }
-          setDeviceWeatherLocation({
-            latitude,
-            longitude,
-            accuracy: coords.accuracy,
-          });
-          setDeviceWeatherLocationStatus({
-            state: "ready",
-            label: "Device location enabled.",
-          });
-          const query = (lastWeatherSearch || weatherSearch || "all").trim() || "all";
-          loadWeatherData(query, buildWeatherFetchOptions());
+          startDeviceWeatherWatch();
         },
         (err) => {
           const code = err?.code;
           const message = String(err?.message || "").toLowerCase();
           setDeviceWeatherLocation(null);
+          clearDeviceWeatherWatch();
 
           if (code === 1) {
             if (message.includes("permissions policy") || message.includes("permission policy")) {
@@ -3464,25 +3538,6 @@ export default function App() {
         }
       );
     };
-
-    if (window.navigator?.permissions?.query) {
-      window.navigator.permissions
-        .query({ name: "geolocation" })
-        .then((status) => {
-          if (status?.state === "denied") {
-            setDeviceWeatherLocation(null);
-            setDeviceWeatherLocationStatus({
-              state: "denied",
-              label: "Device location is blocked for this site. Enable it in browser settings and retry.",
-            });
-            return;
-          }
-          startRequest();
-        })
-        .catch(() => startRequest());
-      return;
-    }
-
     startRequest();
   }
 
@@ -3622,11 +3677,13 @@ export default function App() {
 
     const root = readOnlyContentRef.current;
     if (!root) return;
-    const rootRect = root.getBoundingClientRect();
-    const targetRect = target.getBoundingClientRect();
+    const rootTop = root.scrollTop || 0;
+    const rootBottom = rootTop + (root.clientHeight || 0);
+    const targetTop = target.offsetTop || 0;
+    const targetBottom = targetTop + (target.offsetHeight || 0);
     const outside =
-      targetRect.top < rootRect.top + 20 ||
-      targetRect.bottom > rootRect.bottom - 20;
+      targetTop < rootTop + 20 ||
+      targetBottom > rootBottom - 20;
     if (outside) {
       target.scrollIntoView({ block: "center", behavior: "smooth" });
     }
@@ -3767,11 +3824,14 @@ export default function App() {
 
   useEffect(() => {
     if (!readOnlyOpen || !readOnlyHtml) return;
-    const speechText = prepareReadOnlySpeechContent();
-    if (speechText) {
-      setReadOnlyText(speechText);
+    // Keep read-only open light. Prepare/fragmentize content lazily when read-aloud starts.
+    if (!readOnlyText) {
+      const text = readOnlyContentRef.current?.textContent?.trim();
+      if (text) {
+        setReadOnlyText(text);
+      }
     }
-  }, [readOnlyOpen, readOnlyHtml]);
+  }, [readOnlyOpen, readOnlyHtml, readOnlyText]);
 
   useEffect(() => {
     if (!readOnlyOpen) return;
@@ -3925,32 +3985,33 @@ export default function App() {
   }, [settings.autoRefreshHeadlines, headlineRefreshSec, settings.backendUrl]);
 
   useEffect(() => {
-    if (!settings.autoRefreshResults || !lastSearch) return undefined;
-    loadArticles(lastSearch, {
-      provider: (filterProvider || "").trim() || undefined,
-    });
+    if (activeTab !== "read" || !settings.autoRefreshResults || !lastSearch) return undefined;
+    loadArticles(lastSearch, buildArticleFetchOptions());
     const id = setInterval(() => {
-      loadArticles(lastSearch, {
-        provider: (filterProvider || "").trim() || undefined,
-      });
+      loadArticles(lastSearch, buildArticleFetchOptions());
     }, resultsRefreshSec * 1000);
     return () => clearInterval(id);
   }, [
+    activeTab,
     settings.autoRefreshResults,
     lastSearch,
     resultsRefreshSec,
+    filterSource,
     filterProvider,
+    filterCountry,
+    filterLanguage,
     settings.backendUrl,
   ]);
 
   useEffect(() => {
-    if (!settings.autoRefreshVideos || videoHasSearched) return undefined;
+    if (activeTab !== "watch" || !settings.autoRefreshVideos || videoHasSearched) return undefined;
     loadVideos("all", { rotateAfterLoad: true });
     const id = setInterval(() => {
       loadVideos("all", { rotateAfterLoad: true });
     }, videoRefreshSec * 1000);
     return () => clearInterval(id);
   }, [
+    activeTab,
     settings.autoRefreshVideos,
     videoHasSearched,
     videoRefreshSec,
@@ -3959,7 +4020,12 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    if (!settings.autoRefreshVideoResults || !videoHasSearched || !lastVideoSearch) {
+    if (
+      activeTab !== "watch" ||
+      !settings.autoRefreshVideoResults ||
+      !videoHasSearched ||
+      !lastVideoSearch
+    ) {
       return undefined;
     }
     loadVideos(lastVideoSearch, buildVideoFetchOptions());
@@ -3968,12 +4034,15 @@ export default function App() {
     }, resultsRefreshSec * 1000);
     return () => clearInterval(id);
   }, [
+    activeTab,
     settings.autoRefreshVideoResults,
     videoHasSearched,
     lastVideoSearch,
     resultsRefreshSec,
     videoFilterSource,
     videoFilterProvider,
+    videoFilterCountry,
+    videoFilterLanguage,
     videoStartDate,
     videoEndDate,
     videoSortKey,
@@ -3982,13 +4051,14 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    if (!settings.autoRefreshRadios || radioHasSearched) return undefined;
+    if (activeTab !== "listen" || !settings.autoRefreshRadios || radioHasSearched) return undefined;
     loadRadios("all", { rotateAfterLoad: true });
     const id = setInterval(() => {
       loadRadios("all", { rotateAfterLoad: true });
     }, radioRefreshSec * 1000);
     return () => clearInterval(id);
   }, [
+    activeTab,
     settings.autoRefreshRadios,
     radioHasSearched,
     radioRefreshSec,
@@ -3998,7 +4068,12 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    if (!settings.autoRefreshRadioResults || !radioHasSearched || !lastRadioSearch) {
+    if (
+      activeTab !== "listen" ||
+      !settings.autoRefreshRadioResults ||
+      !radioHasSearched ||
+      !lastRadioSearch
+    ) {
       return undefined;
     }
     loadRadios(lastRadioSearch, buildRadioFetchOptions());
@@ -4007,6 +4082,7 @@ export default function App() {
     }, resultsRefreshSec * 1000);
     return () => clearInterval(id);
   }, [
+    activeTab,
     settings.autoRefreshRadioResults,
     radioHasSearched,
     lastRadioSearch,
@@ -4021,16 +4097,17 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    if (!settings.autoRefreshWeather || weatherRetryBlocked) return undefined;
-    loadWeatherData("all");
+    if (activeTab !== "feel" || !settings.autoRefreshWeather || weatherRetryBlocked) return undefined;
+    loadWeatherData("all", { silent: true });
     const id = setInterval(() => {
-      loadWeatherData("all");
+      loadWeatherData("all", { silent: true });
     }, weatherRefreshSec * 1000);
     return () => clearInterval(id);
-  }, [settings.autoRefreshWeather, weatherRefreshSec, settings.backendUrl, weatherRetryBlocked]);
+  }, [activeTab, settings.autoRefreshWeather, weatherRefreshSec, settings.backendUrl, weatherRetryBlocked]);
 
   useEffect(() => {
     if (
+      activeTab !== "feel" ||
       !settings.autoRefreshWeatherResults ||
       weatherRetryBlocked ||
       !weatherHasSearched ||
@@ -4038,12 +4115,13 @@ export default function App() {
     ) {
       return undefined;
     }
-    loadWeatherData(lastWeatherSearch, buildWeatherFetchOptions());
+    loadWeatherData(lastWeatherSearch, { ...buildWeatherFetchOptions(), silent: true });
     const id = setInterval(() => {
-      loadWeatherData(lastWeatherSearch, buildWeatherFetchOptions());
+      loadWeatherData(lastWeatherSearch, { ...buildWeatherFetchOptions(), silent: true });
     }, resultsRefreshSec * 1000);
     return () => clearInterval(id);
   }, [
+    activeTab,
     settings.autoRefreshWeatherResults,
     weatherHasSearched,
     lastWeatherSearch,
@@ -4057,6 +4135,10 @@ export default function App() {
   useEffect(() => {
     if (activeTab !== "feel" || !settings.autoRefreshRadar) return undefined;
     const id = setInterval(() => {
+      if (isFeelInteractionActive("radar")) {
+        deferredFeelUpdatesRef.current.radarRefreshPending = true;
+        return;
+      }
       setRadarRefreshNonce((prev) => prev + 1);
     }, radarRefreshSec * 1000);
     return () => clearInterval(id);
@@ -4302,6 +4384,44 @@ export default function App() {
     }
     return providerOptions;
   }, [filterProvider, providerOptions]);
+  const articleCountryOptions = useMemo(
+    () =>
+      buildFilterOptions([
+        ...headlineArticles.map((article) => article.country || article.country_code),
+        ...articles.map((article) => article.country || article.country_code),
+      ]),
+    [headlineArticles, articles]
+  );
+  const articleLanguageOptions = useMemo(
+    () =>
+      buildFilterOptions([
+        ...headlineArticles.map((article) => article.language),
+        ...articles.map((article) => article.language),
+      ]),
+    [headlineArticles, articles]
+  );
+  const articleCountryFilterOptions = useMemo(() => {
+    if (
+      filterCountry &&
+      !articleCountryOptions.some(
+        (option) => normalize(option) === normalize(filterCountry)
+      )
+    ) {
+      return [filterCountry, ...articleCountryOptions];
+    }
+    return articleCountryOptions;
+  }, [filterCountry, articleCountryOptions]);
+  const articleLanguageFilterOptions = useMemo(() => {
+    if (
+      filterLanguage &&
+      !articleLanguageOptions.some(
+        (option) => normalize(option) === normalize(filterLanguage)
+      )
+    ) {
+      return [filterLanguage, ...articleLanguageOptions];
+    }
+    return articleLanguageOptions;
+  }, [filterLanguage, articleLanguageOptions]);
 
   const searchExclusionsActive = useMemo(
     () => parseList(settings.searchExclusions).length > 0,
@@ -4311,9 +4431,11 @@ export default function App() {
     () =>
       filterSource.trim() ||
       filterProvider.trim() ||
+      filterCountry.trim() ||
+      filterLanguage.trim() ||
       searchExclusionsActive ||
       localOnlyMode,
-    [filterSource, filterProvider, searchExclusionsActive, localOnlyMode]
+    [filterSource, filterProvider, filterCountry, filterLanguage, searchExclusionsActive, localOnlyMode]
   );
   const filteredArticles = useMemo(() => {
     return articles.filter((article) => {
@@ -4323,16 +4445,31 @@ export default function App() {
       const providerMatch = filterProvider
         ? normalize(article.provider).includes(normalize(filterProvider))
         : true;
+      const countryMatch = filterCountry
+        ? normalize(article.country || article.country_code).includes(normalize(filterCountry))
+        : true;
+      const languageMatch = filterLanguage
+        ? normalize(article.language).includes(normalize(filterLanguage))
+        : true;
       const exclusionMatch = matchesExclusions(article, settings.searchExclusions);
       const locationMatch = localOnlyMode
         ? matchesLocation(article, localFilterLabel)
         : true;
-      return sourceMatch && providerMatch && !exclusionMatch && locationMatch;
+      return (
+        sourceMatch &&
+        providerMatch &&
+        countryMatch &&
+        languageMatch &&
+        !exclusionMatch &&
+        locationMatch
+      );
     });
   }, [
     articles,
     filterSource,
     filterProvider,
+    filterCountry,
+    filterLanguage,
     settings.searchExclusions,
     localOnlyMode,
     localFilterLabel,
@@ -4356,6 +4493,12 @@ export default function App() {
         base = normalize(a.source).localeCompare(normalize(b.source));
       } else if (sortKey === "provider") {
         base = normalize(a.provider).localeCompare(normalize(b.provider));
+      } else if (sortKey === "country") {
+        base = normalize(a.country || a.country_code).localeCompare(
+          normalize(b.country || b.country_code)
+        );
+      } else if (sortKey === "language") {
+        base = normalize(a.language).localeCompare(normalize(b.language));
       }
       return sortDir === "asc" ? base : -base;
     });
@@ -4370,6 +4513,36 @@ export default function App() {
     () => buildFilterOptions(videos.map((video) => video.provider)),
     [videos]
   );
+  const videoCountryOptions = useMemo(
+    () => buildFilterOptions(videos.map((video) => video.country || video.country_code)),
+    [videos]
+  );
+  const videoLanguageOptions = useMemo(
+    () => buildFilterOptions(videos.map((video) => video.language)),
+    [videos]
+  );
+  const videoCountryFilterOptions = useMemo(() => {
+    if (
+      videoFilterCountry &&
+      !videoCountryOptions.some(
+        (option) => normalize(option) === normalize(videoFilterCountry)
+      )
+    ) {
+      return [videoFilterCountry, ...videoCountryOptions];
+    }
+    return videoCountryOptions;
+  }, [videoFilterCountry, videoCountryOptions]);
+  const videoLanguageFilterOptions = useMemo(() => {
+    if (
+      videoFilterLanguage &&
+      !videoLanguageOptions.some(
+        (option) => normalize(option) === normalize(videoFilterLanguage)
+      )
+    ) {
+      return [videoFilterLanguage, ...videoLanguageOptions];
+    }
+    return videoLanguageOptions;
+  }, [videoFilterLanguage, videoLanguageOptions]);
 
   const radioCountryOptions = useMemo(
     () => buildFilterOptions(radios.map((row) => row.country || row.country_code)),
@@ -4401,6 +4574,12 @@ export default function App() {
       const providerMatch = videoFilterProvider
         ? normalize(video.provider).includes(normalize(videoFilterProvider))
         : true;
+      const countryMatch = videoFilterCountry
+        ? normalize(video.country || video.country_code).includes(normalize(videoFilterCountry))
+        : true;
+      const languageMatch = videoFilterLanguage
+        ? normalize(video.language).includes(normalize(videoFilterLanguage))
+        : true;
       const published = getVideoPublishedValue(video);
       const startMatch = startTs === null ? true : published >= startTs;
       const endMatch = endTs === null ? true : published <= endTs;
@@ -4424,6 +4603,8 @@ export default function App() {
       return (
         sourceMatch &&
         providerMatch &&
+        countryMatch &&
+        languageMatch &&
         startMatch &&
         endMatch &&
         searchMatch &&
@@ -4435,6 +4616,8 @@ export default function App() {
     videos,
     videoFilterSource,
     videoFilterProvider,
+    videoFilterCountry,
+    videoFilterLanguage,
     videoStartDate,
     videoEndDate,
     videoSearch,
@@ -4462,6 +4645,12 @@ export default function App() {
         base = normalize(a.source).localeCompare(normalize(b.source));
       } else if (videoSortKey === "provider") {
         base = normalize(a.provider).localeCompare(normalize(b.provider));
+      } else if (videoSortKey === "country") {
+        base = normalize(a.country || a.country_code).localeCompare(
+          normalize(b.country || b.country_code)
+        );
+      } else if (videoSortKey === "language") {
+        base = normalize(a.language).localeCompare(normalize(b.language));
       } else if (videoSortKey === "fetched_at") {
         const aVal = Date.parse(a?.fetched_at || "");
         const bVal = Date.parse(b?.fetched_at || "");
@@ -4589,6 +4778,71 @@ export default function App() {
   const activeRadio = selectedRadioKey
     ? selectedRadioFromList || selectedRadio || null
     : sortedRadios[activeRadioIndex] || null;
+  const readOnlyTranslationState = useArticleTranslation({
+    article: readOnlyArticle,
+    articleUrl: readOnlyUrl,
+    titleText: stripHtml(readOnlyTitle || readOnlyArticle?.title || ""),
+    summaryText: buildArticleSummaryText(readOnlyArticle),
+    bodyText: String(readOnlyText || "").trim(),
+    targetLanguage: translationTargetLanguage,
+    active: readOnlyOpen,
+  });
+  const activeVideoCaptionState = useTimedMediaCaptions({
+    kind: "video",
+    item: activeVideo,
+    targetLanguage: translationTargetLanguage,
+    sourceUrl:
+      getVideoExternalUrl(activeVideo) ||
+      activeVideo?.watch_url ||
+      activeVideo?.video_url ||
+      activeVideo?.url ||
+      "",
+    sourceLanguage: activeVideo?.language || "",
+    preferredLanguage: activeVideo?.language || "",
+    defaultKind: "caption",
+    unavailableReason: "caption_unavailable",
+    active: Boolean(activeVideo),
+  });
+  const videoModalCaptionState = useTimedMediaCaptions({
+    kind: "video",
+    item: videoModalVideo,
+    targetLanguage: translationTargetLanguage,
+    sourceUrl:
+      getVideoExternalUrl(videoModalVideo) ||
+      videoModalVideo?.watch_url ||
+      videoModalVideo?.video_url ||
+      videoModalVideo?.url ||
+      "",
+    sourceLanguage: videoModalVideo?.language || "",
+    preferredLanguage: videoModalVideo?.language || "",
+    defaultKind: "caption",
+    unavailableReason: "caption_unavailable",
+    active: videoModalOpen && Boolean(videoModalVideo),
+  });
+  const radioCaptionState = useTimedMediaCaptions({
+    kind: "radio",
+    item: activeRadio,
+    targetLanguage: translationTargetLanguage,
+    sourceUrl: activeRadio?.homepage_url || activeRadio?.stream_url || "",
+    sourceLanguage: activeRadio?.language || "",
+    preferredLanguage: activeRadio?.language || "",
+    defaultKind: "transcript",
+    unavailableReason: "transcript_unavailable",
+    active: Boolean(activeRadio),
+  });
+  const radioDescriptionTranslationState = useMediaTranslation({
+    kind: "radio",
+    item: activeRadio,
+    targetLanguage: translationTargetLanguage,
+    sourceUrl: "",
+    sourceLanguage: activeRadio?.language || "",
+    preferredLanguage: activeRadio?.language || "",
+    fallbackText: stripHtml(activeRadio?.description || activeRadio?.tags || ""),
+    defaultKind: "description",
+    unavailableReason: "description_unavailable",
+    active: Boolean(activeRadio),
+  });
+
   useEffect(() => {
     if (selectedRadioKey) return;
     if (!sortedRadios.length) return;
@@ -4808,10 +5062,91 @@ export default function App() {
     weatherRows,
   ]);
 
+  const hourlyForecastTarget = useMemo(() => {
+    const preferred = [
+      {
+        latitude: deviceWeatherLocation?.latitude,
+        longitude: deviceWeatherLocation?.longitude,
+        location_name:
+          localWeatherCandidate?.location_name ||
+          localWeatherPinned?.location_name ||
+          "Current location",
+        country_code:
+          localWeatherCandidate?.country_code ||
+          localWeatherPinned?.country_code ||
+          "",
+      },
+      localWeatherPinned,
+      localWeatherCandidate,
+      {
+        latitude: radarCenter?.latitude,
+        longitude: radarCenter?.longitude,
+        location_name: "Map center",
+        country_code: "",
+      },
+    ];
+
+    for (const row of preferred) {
+      const lat = Number(row?.latitude);
+      const lon = Number(row?.longitude);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+      return {
+        latitude: lat,
+        longitude: lon,
+        location_name: String(row?.location_name || row?.label || "").trim(),
+        country_code: String(row?.country_code || "").trim(),
+      };
+    }
+    return null;
+  }, [
+    deviceWeatherLocation?.latitude,
+    deviceWeatherLocation?.longitude,
+    localWeatherCandidate?.latitude,
+    localWeatherCandidate?.longitude,
+    localWeatherCandidate?.location_name,
+    localWeatherCandidate?.country_code,
+    localWeatherPinned?.latitude,
+    localWeatherPinned?.longitude,
+    localWeatherPinned?.location_name,
+    localWeatherPinned?.country_code,
+    radarCenter?.latitude,
+    radarCenter?.longitude,
+  ]);
+
+  useEffect(() => {
+    if (activeTab !== "feel") return undefined;
+    loadHourlyForecastData({ silent: false });
+    return undefined;
+  }, [
+    activeTab,
+    settings.backendUrl,
+    hourlyForecastTarget?.latitude,
+    hourlyForecastTarget?.longitude,
+    hourlyForecastTarget?.location_name,
+    hourlyForecastTarget?.country_code,
+  ]);
+
+  useEffect(() => {
+    if (activeTab !== "feel" || !settings.autoRefreshWeather) return undefined;
+    const id = setInterval(() => {
+      loadHourlyForecastData({ silent: true });
+    }, weatherRefreshSec * 1000);
+    return () => clearInterval(id);
+  }, [
+    activeTab,
+    settings.autoRefreshWeather,
+    weatherRefreshSec,
+    settings.backendUrl,
+    hourlyForecastTarget?.latitude,
+    hourlyForecastTarget?.longitude,
+    hourlyForecastTarget?.location_name,
+    hourlyForecastTarget?.country_code,
+  ]);
+
   const radarZoomLevel = useMemo(() => {
     const z = Number(radarZoom);
     if (!Number.isFinite(z)) return 6;
-    return Math.max(3, Math.min(9, Math.round(z)));
+    return Math.max(3, Math.min(7, Math.round(z)));
   }, [radarZoom]);
 
   const activeRadarFrame = useMemo(() => {
@@ -4840,84 +5175,95 @@ export default function App() {
     if (activeTab !== "feel") return undefined;
     const mountNode = radarMapContainerRef.current;
     if (!mountNode || typeof window === "undefined") return undefined;
+    if (radarMapRef.current) return undefined;
 
     let cancelled = false;
+    try {
+      const startLat = Number(radarCenter?.latitude);
+      const startLon = Number(radarCenter?.longitude);
+      const safeLat = Number.isFinite(startLat) ? startLat : 40.7128;
+      const safeLon = Number.isFinite(startLon) ? startLon : -74.006;
+      const safeZoom = Math.max(
+        RADAR_MIN_ZOOM,
+        Math.min(RADAR_MAX_ZOOM, Number(radarZoomLevel) || RADAR_DEFAULT_ZOOM)
+      );
 
-    const initMap = async () => {
-      try {
-        const maps = await loadGoogleMapsApi();
-        if (cancelled) return;
-        if (!maps || radarMapRef.current) return;
-        if (typeof maps.Map !== "function") {
-          throw new Error("Google Maps Map constructor is unavailable.");
-        }
-        radarMapsApiRef.current = maps;
+      const map = L.map(mountNode, {
+        center: [safeLat, safeLon],
+        zoom: safeZoom,
+        minZoom: RADAR_MIN_ZOOM,
+        maxZoom: RADAR_MAX_ZOOM,
+        zoomControl: false,
+        attributionControl: true,
+        worldCopyJump: true,
+        preferCanvas: true,
+      });
 
-        const startLat = Number(radarCenter?.latitude);
-        const startLon = Number(radarCenter?.longitude);
-        const safeLat = Number.isFinite(startLat) ? startLat : 40.7128;
-        const safeLon = Number.isFinite(startLon) ? startLon : -74.006;
-        const safeZoom = Math.max(
+      const baseLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        crossOrigin: true,
+        updateWhenIdle: false,
+        keepBuffer: 3,
+        attribution: "&copy; OpenStreetMap contributors",
+      }).addTo(map);
+
+      radarBaseLayerRef.current = baseLayer;
+
+      const syncViewport = () => {
+        const center = map.getCenter();
+        const nextZoom = Number(map.getZoom()) || RADAR_DEFAULT_ZOOM;
+        const safeRadarZoom = Math.max(
           RADAR_MIN_ZOOM,
-          Math.min(RADAR_MAX_ZOOM, Number(radarZoomLevel) || RADAR_DEFAULT_ZOOM)
+          Math.min(RADAR_MAX_ZOOM, Math.round(nextZoom))
         );
-
-        const map = new maps.Map(mountNode, {
-          center: { lat: safeLat, lng: safeLon },
-          zoom: safeZoom,
-          minZoom: RADAR_MIN_ZOOM,
-          maxZoom: RADAR_MAX_ZOOM,
-          mapTypeControl: false,
-          streetViewControl: false,
-          fullscreenControl: false,
-          gestureHandling: "greedy",
-          clickableIcons: false,
-          keyboardShortcuts: false,
-          disableDefaultUI: true,
-          ...(GOOGLE_MAPS_ID ? { mapId: GOOGLE_MAPS_ID } : {}),
-        });
+        setRadarZoom(safeRadarZoom);
         setRadarViewport({
-          latitude: safeLat,
-          longitude: safeLon,
-          zoom: safeZoom,
+          latitude: Number(center?.lat),
+          longitude: Number(center?.lng),
+          zoom: safeRadarZoom,
         });
+      };
 
-        const syncViewport = () => {
-          const center = map.getCenter();
-          const nextZoom = Number(map.getZoom()) || RADAR_DEFAULT_ZOOM;
-          const safeRadarZoom = Math.max(
-            RADAR_MIN_ZOOM,
-            Math.min(RADAR_MAX_ZOOM, Math.round(nextZoom))
-          );
-          setRadarZoom(safeRadarZoom);
-          setRadarViewport({
-            latitude: Number(center?.lat?.() ?? center?.lat),
-            longitude: Number(center?.lng?.() ?? center?.lng),
-            zoom: safeRadarZoom,
-          });
-        };
-        const listeners = [
-          map.addListener("idle", syncViewport),
-          map.addListener("zoom_changed", syncViewport),
-          map.addListener("dragend", syncViewport),
-        ];
-        radarMapListenersRef.current = listeners;
+      const markRadarActive = () => setFeelInteraction("radar", true);
+      const markRadarIdle = () => setFeelInteraction("radar", false);
+      const moveEndHandler = () => {
         syncViewport();
+        markRadarIdle();
+      };
+      const zoomEndHandler = () => {
+        syncViewport();
+        markRadarIdle();
+      };
 
-        radarMapRef.current = map;
-      } catch (err) {
-        const reason = String(err?.message || err || "").trim();
-        if (reason.toLowerCase().includes("api key is missing")) {
-          setRadarError(
-            "Radar unavailable: Google Maps API key is not configured for the frontend."
-          );
-        } else {
-          setRadarError(`Radar unavailable: ${reason || "Map initialization failed."}`);
-        }
-      }
-    };
+      map.on("movestart", markRadarActive);
+      map.on("zoomstart", markRadarActive);
+      map.on("dragstart", markRadarActive);
+      map.on("moveend", moveEndHandler);
+      map.on("zoomend", zoomEndHandler);
+      radarMapListenersRef.current = [
+        { remove: () => map.off("movestart", markRadarActive) },
+        { remove: () => map.off("zoomstart", markRadarActive) },
+        { remove: () => map.off("dragstart", markRadarActive) },
+        { remove: () => map.off("moveend", moveEndHandler) },
+        { remove: () => map.off("zoomend", zoomEndHandler) },
+      ];
+      map.whenReady(() => {
+        if (cancelled) return;
+        setRadarError("");
+        syncViewport();
+      });
 
-    initMap();
+      radarMapRef.current = map;
+      radarMapsApiRef.current = null;
+      setRadarViewport({
+        latitude: safeLat,
+        longitude: safeLon,
+        zoom: safeZoom,
+      });
+    } catch (err) {
+      const reason = String(err?.message || err || "").trim();
+      setRadarError(`Radar unavailable: ${reason || "Map initialization failed."}`);
+    }
 
     return () => {
       cancelled = true;
@@ -4936,22 +5282,24 @@ export default function App() {
       radarMapListenersRef.current = [];
       const map = radarMapRef.current;
       const overlayLayer = radarOverlayLayerRef.current;
-      if (map && overlayLayer && map.overlayMapTypes) {
+      const baseLayer = radarBaseLayerRef.current;
+      if (map && overlayLayer) {
         try {
-          const overlayCount = map.overlayMapTypes.getLength();
-          for (let idx = 0; idx < overlayCount; idx += 1) {
-            if (map.overlayMapTypes.getAt(idx) === overlayLayer) {
-              map.overlayMapTypes.removeAt(idx);
-              break;
-            }
-          }
+          map.removeLayer(overlayLayer);
         } catch (err) {
           // ignore
         }
       }
-      if (map) {
+      if (map && baseLayer) {
         try {
-          radarMapsApiRef.current?.event?.clearInstanceListeners?.(map);
+          map.removeLayer(baseLayer);
+        } catch (err) {
+          // ignore
+        }
+      }
+      if (map && typeof map.remove === "function") {
+        try {
+          map.remove();
         } catch (err) {
           // ignore
         }
@@ -4961,6 +5309,7 @@ export default function App() {
       }
       radarMapRef.current = null;
       radarMapsApiRef.current = null;
+      radarBaseLayerRef.current = null;
       radarOverlayLayerRef.current = null;
       radarOverlayErrorRef.current = 0;
     };
@@ -4968,18 +5317,7 @@ export default function App() {
 
   useEffect(() => {
     const map = radarMapRef.current;
-    const maps = radarMapsApiRef.current;
-    if (activeTab !== "feel" || !map || !maps) return undefined;
-    if (
-      typeof maps.ImageMapType !== "function" ||
-      typeof maps.Size !== "function" ||
-      !map.overlayMapTypes ||
-      typeof map.overlayMapTypes.insertAt !== "function"
-    ) {
-      setRadarError("Radar map provider is unavailable.");
-      setRadarLoading(false);
-      return undefined;
-    }
+    if (activeTab !== "feel" || !map) return undefined;
 
     if (radarOverlayTimeoutRef.current) {
       window.clearTimeout(radarOverlayTimeoutRef.current);
@@ -4989,13 +5327,7 @@ export default function App() {
 
     if (radarOverlayLayerRef.current) {
       try {
-        const overlayCount = map.overlayMapTypes.getLength();
-        for (let idx = 0; idx < overlayCount; idx += 1) {
-          if (map.overlayMapTypes.getAt(idx) === radarOverlayLayerRef.current) {
-            map.overlayMapTypes.removeAt(idx);
-            break;
-          }
-        }
+        map.removeLayer(radarOverlayLayerRef.current);
       } catch (err) {
         // ignore
       }
@@ -5006,6 +5338,7 @@ export default function App() {
     const path = activeRadarFrame?.path || "";
     const template = buildRainViewerOverlayTemplate(host, path);
     if (!template) {
+      setRadarLoading(false);
       if (!radarLoading) {
         setRadarError((prev) => prev || "Radar is unavailable.");
       }
@@ -5034,63 +5367,38 @@ export default function App() {
     const tryFrameFallback = (reason) => {
       const current = Number(radarFrameIndex);
       if (Number.isFinite(current) && current > 0) {
-        settleLayer(false, reason);
+        if (radarOverlayTimeoutRef.current) {
+          window.clearTimeout(radarOverlayTimeoutRef.current);
+          radarOverlayTimeoutRef.current = null;
+        }
+        finished = true;
         setRadarFrameIndex(current - 1);
         return;
       }
       settleLayer(false, "Radar is unavailable right now. Enable auto refresh or retry later.");
     };
 
+    let errorCount = 0;
     let nextLayer = null;
     try {
-      nextLayer = new maps.ImageMapType({
-        name: "Current Scope Radar",
-        tileSize: new maps.Size(256, 256),
+      nextLayer = L.tileLayer(template, {
+        opacity: 0.86,
+        zIndex: 420,
+        crossOrigin: true,
+        updateWhenIdle: false,
+        updateWhenZooming: true,
+        keepBuffer: 3,
+        noWrap: false,
         minZoom: RADAR_MIN_ZOOM,
         maxZoom: RADAR_MAX_ZOOM,
-        getTile: (coord, zoom, ownerDocument) => {
-          const tileCount = 1 << zoom;
-          const tile = ownerDocument.createElement("img");
-          tile.alt = "Radar tile";
-          tile.loading = "lazy";
-          tile.decoding = "async";
-          tile.style.width = "256px";
-          tile.style.height = "256px";
-          tile.style.opacity = "0.9";
-          tile.style.objectFit = "cover";
-          tile.referrerPolicy = "no-referrer-when-downgrade";
-
-          if (coord.y < 0 || coord.y >= tileCount) {
-            tile.src =
-              "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=";
-            return tile;
-          }
-
-          const wrappedX = ((coord.x % tileCount) + tileCount) % tileCount;
-          const tileUrl = template
-            .replace("{x}", String(wrappedX))
-            .replace("{y}", String(coord.y))
-            .replace("{z}", String(zoom));
-          tile.onload = () => {
-            settleLayer(true);
-          };
-          tile.onerror = () => {
-            radarOverlayErrorRef.current += 1;
-            if (radarOverlayErrorRef.current >= 6) {
-              tryFrameFallback("Radar frame failed. Loading fallback frame...");
-            }
-          };
-          tile.src = tileUrl;
-          return tile;
-        },
-        releaseTile: (tile) => {
-          try {
-            tile.onload = null;
-            tile.onerror = null;
-          } catch (err) {
-            // ignore
-          }
-        },
+        attribution: "Radar © RainViewer",
+      });
+      nextLayer.on("load", () => settleLayer(true));
+      nextLayer.on("tileerror", () => {
+        errorCount += 1;
+        if (errorCount >= 6) {
+          tryFrameFallback("Radar frame failed. Loading fallback frame...");
+        }
       });
     } catch (error) {
       setRadarLoading(false);
@@ -5103,7 +5411,7 @@ export default function App() {
     }, RADAR_OVERLAY_TIMEOUT_MS);
 
     radarOverlayLayerRef.current = nextLayer;
-    map.overlayMapTypes.insertAt(0, nextLayer);
+    nextLayer.addTo(map);
 
     return () => {
       if (radarOverlayTimeoutRef.current) {
@@ -5111,13 +5419,9 @@ export default function App() {
         radarOverlayTimeoutRef.current = null;
       }
       try {
-        const overlayCount = map.overlayMapTypes.getLength();
-        for (let idx = 0; idx < overlayCount; idx += 1) {
-          if (map.overlayMapTypes.getAt(idx) === nextLayer) {
-            map.overlayMapTypes.removeAt(idx);
-            break;
-          }
-        }
+        nextLayer.off("load");
+        nextLayer.off("tileerror");
+        map.removeLayer(nextLayer);
       } catch (err) {
         // ignore
       }
@@ -5140,13 +5444,19 @@ export default function App() {
     const lat = Number(radarCenter?.latitude);
     const lon = Number(radarCenter?.longitude);
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    const shouldFollowDevice = deviceWeatherLocationStatus.state === "ready";
+    const shouldFollowLocal = Boolean(localFilterActive);
+    if (!shouldFollowDevice && !shouldFollowLocal) return;
     try {
       map.panTo({ lat, lng: lon });
-      map.setZoom(RADAR_DEFAULT_ZOOM);
-      setRadarZoom(RADAR_DEFAULT_ZOOM);
+      if (shouldFollowLocal && !shouldFollowDevice) {
+        map.setZoom(RADAR_DEFAULT_ZOOM);
+        setRadarZoom(RADAR_DEFAULT_ZOOM);
+      }
+      setWeatherChartLocation("auto");
       window.setTimeout(() => {
         try {
-          radarMapsApiRef.current?.event?.trigger?.(map, "resize");
+          map.invalidateSize?.(false);
         } catch (err) {
           // ignore
         }
@@ -5154,7 +5464,14 @@ export default function App() {
     } catch (err) {
       // ignore recenter errors
     }
-  }, [activeTab, localFilterLabel]);
+  }, [
+    activeTab,
+    localFilterActive,
+    localFilterLabel,
+    radarCenter?.latitude,
+    radarCenter?.longitude,
+    deviceWeatherLocationStatus.state,
+  ]);
 
   const weatherGridRows = useMemo(() => {
     if (!localWeatherCandidate) return sortedWeatherRows;
@@ -5294,24 +5611,135 @@ export default function App() {
     return weatherSeriesByLocation.get(weatherChartLocation) || radarNearestSeries;
   }, [weatherSeriesOptions, weatherChartLocation, weatherSeriesByLocation, radarNearestSeries]);
 
+  const weatherChartLocationLabel = useMemo(() => {
+    const label =
+      weatherChartSeries?.location_name ||
+      hourlyForecastTarget?.location_name ||
+      radarNearestSeries?.location_name ||
+      localWeatherCandidate?.location_name ||
+      "Unknown";
+    return String(label || "").trim() || "Unknown";
+  }, [
+    weatherChartSeries?.location_name,
+    hourlyForecastTarget?.location_name,
+    radarNearestSeries?.location_name,
+    localWeatherCandidate?.location_name,
+  ]);
+
   const weatherChartPoints = useMemo(() => {
-    const rows = weatherChartSeries?.rows || [];
-    return rows
-      .map((row) => {
-        const ts = getWeatherTimeValue(row);
-        return {
-          row,
-          ts,
-          label: formatTimestamp(row.weather_time || row.fetched_at) || "--",
-          temp: Number(row.temperature),
-          feels: Number(row.apparent_temperature),
-          humidity: Number(row.humidity),
-          wind: Number(row.wind_speed),
-        };
-      })
-      .filter((point) => Number.isFinite(point.ts))
-      .sort((a, b) => a.ts - b.ts);
-  }, [weatherChartSeries]);
+    const toNum = (row, keys) => {
+      for (const key of keys) {
+        const value = Number(row?.[key]);
+        if (Number.isFinite(value)) return value;
+      }
+      return NaN;
+    };
+    const toCondition = (row) =>
+      String(
+        row?.weather_label ||
+          row?.condition ||
+          row?.source ||
+          row?.provider ||
+          "Unknown"
+      ).trim() || "Unknown";
+
+    const mapRows = (rows) =>
+      (Array.isArray(rows) ? rows : [])
+        .map((row) => {
+          const ts =
+            getWeatherTimeValue(row) ||
+            Date.parse(
+              String(
+                row?.time ||
+                  row?.timeISO ||
+                  row?.time_iso ||
+                  row?.weather_time ||
+                  row?.fetched_at ||
+                  row?.created_at ||
+                  ""
+              )
+            ) ||
+            0;
+          const condition = toCondition(row);
+          return {
+            row: {
+              ...row,
+              weather_label: row?.weather_label || condition,
+            },
+            ts,
+            label:
+              formatTimestamp(
+                row?.time || row?.timeISO || row?.weather_time || row?.fetched_at
+              ) || "--",
+            condition,
+            temp: toNum(row, ["temperature", "tempF", "temp", "temp_max"]),
+            feels: toNum(row, [
+              "apparent_temperature",
+              "feelsLikeF",
+              "feels_like",
+              "feelsLike",
+            ]),
+            humidity: toNum(row, ["humidity", "relative_humidity_2m"]),
+            wind: toNum(row, ["wind_speed", "windMph", "wind_speed_max", "wind"]),
+          };
+        })
+        .filter((point) => Number.isFinite(point.ts))
+        .sort((a, b) => a.ts - b.ts);
+
+    const hasThermalDepth = (points) =>
+      points.filter((point) => Number.isFinite(point.temp) || Number.isFinite(point.feels)).length >= 2;
+    const hasAtmosDepth = (points) =>
+      points.filter((point) => Number.isFinite(point.humidity) || Number.isFinite(point.wind)).length >= 2;
+    const hasConditionDepth = (points) =>
+      points.some(
+        (point) =>
+          String(point?.row?.weather_label || point?.condition || "").trim().length > 0
+      );
+    const coverageScore = (points) => {
+      if (!Array.isArray(points) || points.length === 0) return -1;
+      let score = 0;
+      if (hasThermalDepth(points)) score += 3;
+      if (hasAtmosDepth(points)) score += 3;
+      if (hasConditionDepth(points)) score += 2;
+      score += Math.min(points.length, 24) / 24;
+      return score;
+    };
+
+    const seriesPoints = mapRows(weatherChartSeries?.rows || []);
+    const hourlyPoints = mapRows(hourlyForecastRows || []);
+
+    const seriesScore = coverageScore(seriesPoints);
+    const hourlyScore = coverageScore(hourlyPoints);
+
+    if (hourlyScore > seriesScore && hourlyPoints.length >= 2) return hourlyPoints;
+    if (seriesPoints.length >= 2) return seriesPoints;
+    if (hourlyPoints.length >= 2) return hourlyPoints;
+
+    return seriesPoints;
+  }, [weatherChartSeries, hourlyForecastRows]);
+
+  useEffect(() => {
+    if (!weatherChartPoints.length) {
+      setWeatherChartPointTs(null);
+      return;
+    }
+    const hasSelected = weatherChartPoints.some((point) => point.ts === weatherChartPointTs);
+    if (!hasSelected) {
+      setWeatherChartPointTs(weatherChartPoints[weatherChartPoints.length - 1].ts);
+    }
+  }, [weatherChartPoints, weatherChartPointTs]);
+
+  const weatherChartFocusedPoint = useMemo(() => {
+    if (!weatherChartPoints.length) return null;
+    if (weatherChartPointTs === null || weatherChartPointTs === undefined) {
+      return weatherChartPoints[weatherChartPoints.length - 1] || null;
+    }
+    return (
+      weatherChartPoints.find((point) => point.ts === weatherChartPointTs) ||
+      weatherChartPoints[weatherChartPoints.length - 1] ||
+      null
+    );
+  }, [weatherChartPoints, weatherChartPointTs]);
 
   const weatherThermalChart = useMemo(() => {
     if (!Array.isArray(weatherChartPoints) || weatherChartPoints.length < 2) return null;
@@ -5380,6 +5808,12 @@ export default function App() {
       feelsPath,
       tempAreaPath,
       dots: points.map((point) => ({
+        ts: point.ts,
+        label: point.label,
+        temp: point.temp,
+        feels: point.feels,
+        humidity: point.humidity,
+        wind: point.wind,
         x: toX(point.ts),
         tempY: Number.isFinite(point.temp) ? toY(point.temp) : null,
         feelsY: Number.isFinite(point.feels) ? toY(point.feels) : null,
@@ -5437,6 +5871,12 @@ export default function App() {
           const x = toX(point.ts);
           const y = toYHumidity(point.humidity);
           return {
+            ts: point.ts,
+            label: point.label,
+            temp: point.temp,
+            feels: point.feels,
+            humidity: point.humidity,
+            wind: point.wind,
             x,
             y,
             width: barWidth,
@@ -5448,6 +5888,11 @@ export default function App() {
       windDots: points
         .filter((point) => Number.isFinite(point.wind))
         .map((point) => ({
+          ts: point.ts,
+          label: point.label,
+          temp: point.temp,
+          feels: point.feels,
+          humidity: point.humidity,
           x: toX(point.ts),
           y: toYWind(point.wind),
           value: point.wind,
@@ -5492,9 +5937,9 @@ export default function App() {
     return {
       total,
       slices,
-      centerLabel: weatherChartSeries?.location_name || "Weather mix",
+      centerLabel: weatherChartLocationLabel || "Weather mix",
     };
-  }, [weatherChartPoints, weatherChartSeries?.location_name]);
+  }, [weatherChartPoints, weatherChartLocationLabel]);
 
   const weatherChartStats = useMemo(() => {
     if (!Array.isArray(weatherChartPoints) || !weatherChartPoints.length) return null;
@@ -5540,9 +5985,291 @@ export default function App() {
       heatIndex: Number.isFinite(heatIndex) ? heatIndex : null,
       windChill: Number.isFinite(windChill) ? windChill : null,
       comfort,
-      condition: String(latestPoint.row?.weather_label || latestPoint.row?.source || "Unknown"),
+      condition: String(
+        latestPoint.row?.weather_label ||
+          latestPoint.condition ||
+          latestPoint.row?.condition ||
+          latestPoint.row?.source ||
+          "Unknown"
+      ),
     };
   }, [weatherChartPoints]);
+
+  const forecastSourceRows = useMemo(() => {
+    const primaryRows =
+      Array.isArray(weatherChartSeries?.rows) && weatherChartSeries.rows.length
+        ? weatherChartSeries.rows
+        : Array.isArray(radarNearestSeries?.rows) && radarNearestSeries.rows.length
+        ? radarNearestSeries.rows
+        : Array.isArray(weatherRows)
+        ? weatherRows
+        : [];
+    return [...primaryRows]
+      .filter(Boolean)
+      .map((row) => {
+        const ts = getWeatherTimeValue(row) || safeWeatherTimestamp(row);
+        return {
+          ...row,
+          __forecastTs: Number.isFinite(ts) ? ts : 0,
+        };
+      })
+      .filter((row) => row.__forecastTs > 0)
+      .sort((a, b) => a.__forecastTs - b.__forecastTs);
+  }, [weatherChartSeries, radarNearestSeries, weatherRows]);
+
+  const hourlyForecastHours = useMemo(() => {
+    if (!Array.isArray(hourlyForecastRows) || !hourlyForecastRows.length) return [];
+    const nowTs = Date.now();
+    const parsed = hourlyForecastRows
+      .map((row) => {
+        const ts =
+          Date.parse(
+            String(
+              row?.time ||
+                row?.time_iso ||
+                row?.weather_time ||
+                row?.fetched_at ||
+                row?.created_at ||
+                ""
+            )
+          ) || 0;
+        if (!Number.isFinite(ts) || ts <= 0) return null;
+        const date = new Date(ts);
+        const hour = date.getHours();
+        const condition = String(
+          row?.condition || row?.weather_label || row?.source || row?.provider || "Weather"
+        ).trim();
+        const precipChanceRaw =
+          row?.precip_chance ??
+          row?.precipChance ??
+          row?.precip_probability ??
+          row?.precipProbability ??
+          row?.precipitation_probability ??
+          row?.precipitationProbability;
+        const precipChance = Number(precipChanceRaw);
+        const tempF = Number(row?.temperature ?? row?.tempF ?? row?.apparent_temperature);
+        const feelsLikeF = Number(
+          row?.apparent_temperature ?? row?.feels_like ?? row?.feelsLike ?? row?.temperature
+        );
+        const windMph = Number(row?.wind_speed ?? row?.windSpeed ?? row?.wind_mph ?? row?.windMph);
+        const humidity = Number(row?.humidity ?? row?.relative_humidity);
+        const pressure = Number(row?.pressure ?? row?.surface_pressure ?? row?.pressure_hpa);
+        const precipAmount = Number(
+          row?.precipitation_amount ??
+            row?.precipitation ??
+            row?.precipAmount ??
+            row?.rain ??
+            row?.snowfall
+        );
+        return {
+          ts,
+          timeISO: date.toISOString(),
+          tempF: Number.isFinite(tempF) ? tempF : null,
+          feelsLikeF: Number.isFinite(feelsLikeF) ? feelsLikeF : null,
+          condition,
+          // Sync day/night to device-local clock for the forecast timestamp.
+          isNight: hour < 6 || hour >= 18,
+          precipType: inferPrecipType(condition, row?.precip_type || row?.precipType || "none"),
+          precipChance: Number.isFinite(precipChance) ? precipChance : null,
+          precipAmount: Number.isFinite(precipAmount) ? precipAmount : null,
+          windMph: Number.isFinite(windMph) ? windMph : null,
+          humidity: Number.isFinite(humidity) ? humidity : null,
+          pressure: Number.isFinite(pressure) ? pressure : null,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.ts - b.ts);
+
+    if (!parsed.length) return [];
+
+    const windowStart = nowTs;
+    const upcoming = parsed.filter((row) => row.ts >= windowStart);
+    const selected = (upcoming.length ? upcoming : parsed).slice(0, 12);
+    if (!selected.length) return [];
+
+    let nowIndex = selected.findIndex((row) => Math.abs(row.ts - nowTs) <= 45 * 60 * 1000);
+    if (nowIndex < 0) nowIndex = 0;
+
+    return selected.map((row, index) => ({
+      ...row,
+      isNow: index === nowIndex,
+    }));
+  }, [hourlyForecastRows]);
+
+  const dailyForecastDays = useMemo(() => {
+    if (Array.isArray(dailyForecastRows) && dailyForecastRows.length) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const todayTs = today.getTime();
+      const sorted = dailyForecastRows
+        .map((row) => {
+          const iso = String(row?.date || row?.time || row?.day || "").trim();
+          const parsed = iso ? new Date(iso) : null;
+          const ts = parsed && Number.isFinite(parsed.getTime()) ? parsed.getTime() : 0;
+          return { row, ts };
+        })
+        .filter((entry) => entry.ts > 0 && entry.ts >= todayTs)
+        .sort((a, b) => a.ts - b.ts);
+
+      const byDay = new Map(
+        sorted.map((entry) => [new Date(entry.ts).toISOString().slice(0, 10), entry.row])
+      );
+      const fallbackRow =
+        sorted[0]?.row || dailyForecastRows[0] || null;
+      const sequence = [];
+      for (let offset = 0; offset < 7; offset += 1) {
+        const day = new Date(todayTs + offset * 86400000);
+        const key = day.toISOString().slice(0, 10);
+        const row = byDay.get(key) || fallbackRow;
+        const dateISO = `${key}T00:00:00`;
+        const condition = String(
+          row?.condition || row?.weather_label || "Weather"
+        ).trim();
+        const hiF = Number(row?.temp_max ?? row?.temperature_max ?? row?.high ?? row?.hiF);
+        const loF = Number(row?.temp_min ?? row?.temperature_min ?? row?.low ?? row?.loF);
+        const precipChance = Number(
+          row?.precip_chance ?? row?.precip_probability ?? row?.precipChance
+        );
+        const windMph = Number(row?.wind_speed_max ?? row?.wind_speed ?? row?.windMph);
+        const humidity = Number(row?.humidity ?? row?.humidity_avg);
+        sequence.push({
+          dateISO,
+          dayLabel: day.toLocaleDateString([], { weekday: "long" }),
+          isToday: offset === 0,
+          hiF: Number.isFinite(hiF) ? hiF : null,
+          loF: Number.isFinite(loF) ? loF : null,
+          condition,
+          precipType: inferPrecipType(condition, row?.precip_type || row?.precipType || "none"),
+          precipChance: Number.isFinite(precipChance) ? precipChance : null,
+          windMph: Number.isFinite(windMph) ? windMph : null,
+          humidity: Number.isFinite(humidity) ? humidity : null,
+        });
+      }
+      return sequence;
+    }
+    if (!forecastSourceRows.length) return [];
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayStartTs = todayStart.getTime();
+    const grouped = new Map();
+    forecastSourceRows.forEach((row) => {
+      const ts = row.__forecastTs;
+      if (!Number.isFinite(ts) || ts <= 0 || ts < todayStartTs) return;
+      const date = new Date(ts);
+      const dayStart = new Date(date);
+      dayStart.setHours(0, 0, 0, 0);
+      const dayStartTs = dayStart.getTime();
+      const dayKey = dayStart.toISOString().slice(0, 10);
+      let bucket = grouped.get(dayKey);
+      if (!bucket) {
+        bucket = {
+          dayKey,
+          ts: dayStartTs,
+          hiF: Number.NEGATIVE_INFINITY,
+          loF: Number.POSITIVE_INFINITY,
+          windTotal: 0,
+          humidityTotal: 0,
+          count: 0,
+          precipChance: 0,
+          latestCondition: "",
+        };
+        grouped.set(dayKey, bucket);
+      }
+      const temp = Number(row?.temperature);
+      if (Number.isFinite(temp)) {
+        bucket.hiF = Math.max(bucket.hiF, temp);
+        bucket.loF = Math.min(bucket.loF, temp);
+      }
+      const wind = Number(row?.wind_speed);
+      if (Number.isFinite(wind)) {
+        bucket.windTotal += wind;
+      }
+      const humidity = Number(row?.humidity);
+      if (Number.isFinite(humidity)) {
+        bucket.humidityTotal += humidity;
+      }
+      const precipChance = Number(
+        row?.precip_chance ??
+          row?.precipChance ??
+          row?.precip_probability ??
+          row?.precipitation_probability
+      );
+      if (Number.isFinite(precipChance)) {
+        bucket.precipChance = Math.max(bucket.precipChance, precipChance);
+      }
+      bucket.count += 1;
+      if (!bucket.latestCondition) {
+        bucket.latestCondition = String(
+          row?.weather_label || row?.condition || row?.source || row?.provider || "Weather"
+        ).trim();
+      }
+    });
+    const fallbackBucket = Array.from(grouped.values()).sort((a, b) => b.ts - a.ts)[0] || null;
+    const sequence = [];
+    for (let offset = 0; offset < 7; offset += 1) {
+      const dayTs = todayStartTs + offset * 86400000;
+      const dayDate = new Date(dayTs);
+      const dayKey = dayDate.toISOString().slice(0, 10);
+      const bucket = grouped.get(dayKey) || null;
+      const source = bucket || fallbackBucket;
+      const condition = source?.latestCondition || "Forecast pending";
+      sequence.push({
+        dateISO: `${dayKey}T00:00:00`,
+        dayLabel: dayDate.toLocaleDateString([], { weekday: "long" }),
+        isToday: offset === 0,
+        hiF: source && Number.isFinite(source.hiF) ? source.hiF : null,
+        loF: source && Number.isFinite(source.loF) ? source.loF : null,
+        condition,
+        precipType: inferPrecipType(condition, "none"),
+        precipChance:
+          source && Number.isFinite(source.precipChance) ? source.precipChance : null,
+        windMph:
+          source && source.count > 0 && Number.isFinite(source.windTotal)
+            ? source.windTotal / source.count
+            : null,
+        humidity:
+          source && source.count > 0 && Number.isFinite(source.humidityTotal)
+            ? source.humidityTotal / source.count
+            : null,
+      });
+    }
+    return sequence;
+  }, [dailyForecastRows, forecastSourceRows]);
+
+  useEffect(() => {
+    if (!hourlyForecastHours.length) {
+      setForecastSelectedHourIndex(0);
+      setForecastSelectedHourTs(null);
+      setForecastAutoScroll(false);
+      return;
+    }
+    let nextIndex = -1;
+    if (Number.isFinite(forecastSelectedHourTs)) {
+      nextIndex = hourlyForecastHours.findIndex((point) => point.ts === forecastSelectedHourTs);
+    }
+    if (nextIndex < 0) {
+      nextIndex = hourlyForecastHours.findIndex((point) => point.isNow);
+    }
+    if (nextIndex < 0) {
+      nextIndex = 0;
+    }
+    setForecastSelectedHourIndex(nextIndex);
+    const nextPoint = hourlyForecastHours[nextIndex];
+    setForecastSelectedHourTs(Number.isFinite(nextPoint?.ts) ? nextPoint.ts : null);
+  }, [hourlyForecastHours, forecastSelectedHourTs]);
+
+  useEffect(() => {
+    if (!dailyForecastDays.length) {
+      setForecastExpandedDayIndex(null);
+      return;
+    }
+    if (
+      Number.isFinite(forecastExpandedDayIndex) &&
+      forecastExpandedDayIndex >= dailyForecastDays.length
+    ) {
+      setForecastExpandedDayIndex(null);
+    }
+  }, [dailyForecastDays, forecastExpandedDayIndex]);
 
   const weatherTrendSeries = useMemo(() => {
     const group = weatherTrendGroup;
@@ -5650,6 +6377,35 @@ export default function App() {
     }
   }, [activeVideoIndex, playableSortedVideos.length]);
 
+  function handleSelectForecastHour(index, options = {}) {
+    setForecastSelectedHourIndex(index);
+    const point = hourlyForecastHours[index];
+    if (point && Number.isFinite(point.ts) && point.ts > 0) {
+      setForecastSelectedHourTs(point.ts);
+      setWeatherChartPointTs(point.ts);
+      if (options?.autoScroll !== false) {
+        setForecastAutoScroll(true);
+      }
+    }
+  }
+
+  function openHourlyDetail(index) {
+    const point = getHourlyDetailPoint(hourlyForecastHours, index);
+    if (!point) return;
+    handleSelectForecastHour(index, { autoScroll: false });
+    setHourlyDetailPoint(point);
+    setHourlyDetailOpen(true);
+  }
+
+  function closeHourlyDetail() {
+    setHourlyDetailOpen(false);
+    setHourlyDetailPoint(null);
+  }
+
+  function handleToggleForecastDay(index) {
+    setForecastExpandedDayIndex((prev) => (prev === index ? null : index));
+  }
+
   useEffect(() => {
     setVideoInfoOpen(false);
   }, [activeVideoIndex]);
@@ -5724,7 +6480,7 @@ export default function App() {
   const mediaPlayerCardRef = useRef(null);
   const radioPlayerCardRef = useRef(null);
   const RADAR_MIN_ZOOM = 3;
-  const RADAR_MAX_ZOOM = 9;
+  const RADAR_MAX_ZOOM = 7;
   const RADAR_DEFAULT_ZOOM = 6;
   const RADAR_OVERLAY_TIMEOUT_MS = 7000;
 
@@ -5746,6 +6502,7 @@ export default function App() {
       map.panTo({ lat, lng: lon });
       map.setZoom(RADAR_DEFAULT_ZOOM);
       setRadarZoom(RADAR_DEFAULT_ZOOM);
+      setWeatherChartLocation("auto");
       setRadarError("");
     }
   }
@@ -5778,7 +6535,7 @@ export default function App() {
         try {
           const map = radarMapRef.current;
           if (!map) return;
-          radarMapsApiRef.current?.event?.trigger?.(map, "resize");
+          map.invalidateSize?.(false);
           const center = map.getCenter?.();
           if (center) {
             map.panTo(center);
@@ -5825,6 +6582,11 @@ export default function App() {
       }
     }, 40);
   }
+
+  const readOnlyTranslatedActive = readOnlyTranslationState.translatedActive;
+  const readOnlyDisplayTitle = readOnlyTranslationState.displayTitle;
+  const readOnlyDisplaySummary = readOnlyTranslationState.displaySummary;
+  const readOnlyDisplayBody = readOnlyTranslationState.displayBody;
 
   const settingsSections = [
     {
@@ -6419,6 +7181,31 @@ export default function App() {
               </p>
             )}
           </div>
+          <div className="settings-card">
+            <h3>Translation</h3>
+            <div className="settings-field">
+              <label>Target language</label>
+              <select
+                value={settings.translationTargetLanguage || inferDefaultTranslationLanguage()}
+                onChange={(e) =>
+                  updateSetting(
+                    "translationTargetLanguage",
+                    normalizeTranslationLanguage(e.target.value) || inferDefaultTranslationLanguage()
+                  )
+                }
+              >
+                {TRANSLATION_LANGUAGE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <p className="muted small">
+              Used by article translation, video caption translation, and radio transcript translation
+              when available.
+            </p>
+          </div>
         </div>
       ),
     },
@@ -6437,7 +7224,7 @@ export default function App() {
               <input
                 type="url"
                 value={backendUrlDraft}
-                placeholder="https://api.thecurrentscope.com"
+                placeholder="https://newsapp-backend.rousehouse.net"
                 onChange={(e) => setBackendUrlDraft(e.target.value)}
               />
               <p className="muted small">
@@ -6596,6 +7383,22 @@ export default function App() {
                     <code>/installers</code> directory.
                   </p>
                 )}
+                <div className="installer-helper-links">
+                  {INSTALLER_HELPER_ASSETS.map((asset) => (
+                    <a
+                      key={asset.id}
+                      className="installer-helper-link"
+                      href={asset.href}
+                      download={asset.download}
+                    >
+                      {asset.label}
+                    </a>
+                  ))}
+                </div>
+                <p className="muted small">
+                  Helper files are served from the frontend and cached by the service worker.
+                  Installer binaries still download fresh from the server.
+                </p>
               </div>
             </div>
           )}
@@ -6764,10 +7567,7 @@ export default function App() {
               onChange={(e) => setSearch(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
-                  loadArticles(search || "all", {
-                    source: (filterSource || "").trim() || undefined,
-                    provider: (filterProvider || "").trim() || undefined,
-                  });
+                  loadArticles(search || "all", buildArticleFetchOptions());
                 }
               }}
             />
@@ -6775,12 +7575,7 @@ export default function App() {
           <div className="search-actions">
             <button
               className="primary"
-              onClick={() =>
-                loadArticles(search || "all", {
-                  source: (filterSource || "").trim() || undefined,
-                  provider: (filterProvider || "").trim() || undefined,
-                })
-              }
+              onClick={() => loadArticles(search || "all", buildArticleFetchOptions())}
             >
               Search
             </button>
@@ -6874,6 +7669,36 @@ export default function App() {
                         ))}
                       </select>
                     </div>
+                    <div className="field">
+                      <label htmlFor="filter-country">Country</label>
+                      <select
+                        id="filter-country"
+                        value={filterCountry}
+                        onChange={(e) => setFilterCountry(e.target.value)}
+                      >
+                        <option value="">All countries</option>
+                        {articleCountryFilterOptions.map((country) => (
+                          <option key={country} value={country}>
+                            {country}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="field">
+                      <label htmlFor="filter-language">Language</label>
+                      <select
+                        id="filter-language"
+                        value={filterLanguage}
+                        onChange={(e) => setFilterLanguage(e.target.value)}
+                      >
+                        <option value="">All languages</option>
+                        {articleLanguageFilterOptions.map((language) => (
+                          <option key={language} value={language}>
+                            {language}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                     <div className="results-divider" />
                     <div className="field">
                       <label htmlFor="sort-key">Sort by</label>
@@ -6886,6 +7711,8 @@ export default function App() {
                         <option value="title">Title</option>
                         <option value="source">Source</option>
                         <option value="provider">Provider</option>
+                        <option value="country">Country</option>
+                        <option value="language">Language</option>
                       </select>
                     </div>
                     <div className="field">
@@ -6940,13 +7767,15 @@ export default function App() {
                         Reset filters
                       </button>
                     </div>
-                    {(filterSource || filterProvider) && (
+                    {(filterSource || filterProvider || filterCountry || filterLanguage) && (
                       <button
                         type="button"
                         className="ghost"
                         onClick={() => {
                           setFilterSource("");
                           setFilterProvider("");
+                          setFilterCountry("");
+                          setFilterLanguage("");
                         }}
                       >
                         Clear filters
@@ -7016,11 +7845,19 @@ export default function App() {
                   {activeVideo ? (
                     <>
                       {!videoPopoutOpen ? (
-                        <MediaPlayer>
-                          {renderVideoPlayerSurface(activeVideo, {
-                            onEnded: settings.videoAutoRotate ? goNextVideo : null,
-                          })}
-                        </MediaPlayer>
+                        <VideoPlaybackSurface
+                          video={activeVideo}
+                          onEnded={settings.videoAutoRotate ? goNextVideo : null}
+                          openExternal={openExternal}
+                          autoPlay
+                          muted
+                          captionState={activeVideoCaptionState}
+                          targetLanguage={translationTargetLanguage}
+                          targetLanguageLabel={
+                            translationTargetLanguageLabel ||
+                            translationTargetLanguage.toUpperCase()
+                          }
+                        />
                       ) : (
                         <div className="player-detached-shell">
                           <div className="results-empty">
@@ -7177,7 +8014,14 @@ export default function App() {
                       <summary>
                         <span>Filters &amp; sorting</span>
                         <span className="summary-meta">
-                          {videoFilterSource || videoFilterProvider || videoStartDate || videoEndDate ? "Active" : "All"}
+                          {videoFilterSource ||
+                          videoFilterProvider ||
+                          videoFilterCountry ||
+                          videoFilterLanguage ||
+                          videoStartDate ||
+                          videoEndDate
+                            ? "Active"
+                            : "All"}
                         </span>
                       </summary>
                       <div className="results-sidebar-card">
@@ -7208,6 +8052,36 @@ export default function App() {
                             {videoProviderOptions.map((provider) => (
                               <option key={provider} value={provider}>
                                 {provider}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="field">
+                          <label htmlFor="video-filter-country">Country</label>
+                          <select
+                            id="video-filter-country"
+                            value={videoFilterCountry}
+                            onChange={(e) => setVideoFilterCountry(e.target.value)}
+                          >
+                            <option value="">All countries</option>
+                            {videoCountryFilterOptions.map((country) => (
+                              <option key={country} value={country}>
+                                {country}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="field">
+                          <label htmlFor="video-filter-language">Language</label>
+                          <select
+                            id="video-filter-language"
+                            value={videoFilterLanguage}
+                            onChange={(e) => setVideoFilterLanguage(e.target.value)}
+                          >
+                            <option value="">All languages</option>
+                            {videoLanguageFilterOptions.map((language) => (
+                              <option key={language} value={language}>
+                                {language}
                               </option>
                             ))}
                           </select>
@@ -7243,6 +8117,8 @@ export default function App() {
                             <option value="title">Title</option>
                             <option value="source">Source</option>
                             <option value="provider">Provider</option>
+                            <option value="country">Country</option>
+                            <option value="language">Language</option>
                             <option value="fetched_at">Fetched</option>
                           </select>
                         </div>
@@ -7284,6 +8160,8 @@ export default function App() {
                           onClick={() => {
                             setVideoFilterSource("");
                             setVideoFilterProvider("");
+                            setVideoFilterCountry("");
+                            setVideoFilterLanguage("");
                             setVideoStartDate("");
                             setVideoEndDate("");
                             setVideoSortKey("published_at");
@@ -7472,13 +8350,43 @@ export default function App() {
                             Station is playing in the pop-out player. You can keep browsing the app.
                           </div>
                         ) : (
-                          renderRadioPlayback(activeRadio)
+                          <RadioPlaybackSurface
+                            radio={activeRadio}
+                            audioRef={radioAudioRef}
+                            onPlayStateChange={setRadioIsPlaying}
+                            onPlaybackError={setMessage}
+                            captionState={radioCaptionState}
+                            targetLanguage={translationTargetLanguage}
+                            targetLanguageLabel={
+                              translationTargetLanguageLabel ||
+                              translationTargetLanguage.toUpperCase()
+                            }
+                          />
                         )}
                         {activeRadio.tags ? (
                           <div className="radio-tags">
                             <span className="muted">Tags:</span> {activeRadio.tags}
                           </div>
                         ) : null}
+                        <MediaTranslationPanel
+                          compact
+                          heading="Source description"
+                          mode={radioDescriptionTranslationState.mode}
+                          onModeChange={radioDescriptionTranslationState.setMode}
+                          targetLanguage={translationTargetLanguage}
+                          targetLanguageLabel={
+                            translationTargetLanguageLabel ||
+                            translationTargetLanguage.toUpperCase()
+                          }
+                          state={radioDescriptionTranslationState.state}
+                          loading={radioDescriptionTranslationState.loading}
+                          error={
+                            radioDescriptionTranslationState.error ||
+                            (translationStatus.enabled ? "" : translationStatus.message)
+                          }
+                          emptyMessage="A translated source description is not available for this station yet."
+                          groupLabel="Radio description language"
+                        />
                       </div>
                     </>
                   ) : radioLoading ? (
@@ -7822,18 +8730,11 @@ export default function App() {
                     <div>
                       <h4>Today near you</h4>
                       <p className="muted">
-                        Uses your device location to pin the closest stored weather record.
+                        Uses device location automatically to pin the closest stored weather record.
                       </p>
                     </div>
                     <div className="headline-tools">
                       <div className="update-chip">Updated {weatherUpdatedAt || "--"}</div>
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() => requestDeviceWeatherLocation({ force: true })}
-                      >
-                        Use my location
-                      </button>
                       <label className="toggle">
                         <input
                           type="checkbox"
@@ -7895,120 +8796,156 @@ export default function App() {
                           ? "No stored weather record matched your location yet."
                           : deviceWeatherLocationStatus.label}
                       </p>
-                      <button
-                        type="button"
-                        className="primary"
-                        onClick={() => requestDeviceWeatherLocation({ force: true })}
-                      >
-                        Use my location
-                      </button>
                     </div>
                   )}
                 </div>
               </div>
               {tabNav}
-              <div className="weather-insights">
-                <div className="weather-insight-card radar-card">
-                  <div className="weather-insight-head">
-                    <div>
-                      <h4>Radar</h4>
-                      <p className="muted small">
-                        Drag to pan. Pinch or wheel to zoom. Reset centers on your selected local area.
-                      </p>
-                    </div>
-                    <div className="weather-insight-actions">
-                      <div className="update-chip small">
-                        {radarUpdatedAt ? `Updated ${radarUpdatedAt}` : "Updated --"}
-                      </div>
-                      <label className="toggle small">
-                        <input
-                          type="checkbox"
-                          checked={settings.autoRefreshRadar}
-                          onChange={(e) =>
-                            updateSetting("autoRefreshRadar", e.target.checked)
-                          }
-                        />
-                        <span className="toggle-track"></span>
-                        <span className="toggle-label">Auto refresh</span>
-                      </label>
-                    </div>
-                  </div>
+              <div className="wf-forecast-stack wf-hourly-slot">
+                <HourlyForecastCardRow
+                  hours={hourlyForecastHours}
+                  selectedIndex={forecastSelectedHourIndex}
+                  onSelectHour={handleSelectForecastHour}
+                  onOpenHourDetail={openHourlyDetail}
+                  onInteractionStart={() => setFeelInteraction("hourly", true)}
+                  onInteractionEnd={() => setFeelInteraction("hourly", false)}
+                  autoScroll={forecastAutoScroll}
+                  onAutoScrollComplete={() => setForecastAutoScroll(false)}
+                  loading={hourlyForecastLoading}
+                  error={hourlyForecastError}
+                  onRetry={() => loadHourlyForecastData({ silent: false })}
+                />
+              </div>
+              <div
+                className="weather-insights"
+                onPointerDownCapture={() => setFeelInteraction("weather", true)}
+                onPointerUpCapture={() => setFeelInteraction("weather", false)}
+                onPointerCancelCapture={() => setFeelInteraction("weather", false)}
+                onTouchStartCapture={() => setFeelInteraction("weather", true)}
+                onTouchEndCapture={() => setFeelInteraction("weather", false)}
+              >
+                <div className="wf-radar-daily-row">
                   <div
-                    className={`radar-frame${radarFullscreen ? " is-fullscreen" : ""}`}
-                    ref={radarFrameRef}
-                    role="application"
-                    aria-label="Radar map"
+                    className="wf-forecast-stack wf-daily-slot"
+                    onPointerDownCapture={() => setFeelInteraction("daily", true)}
+                    onPointerUpCapture={() => setFeelInteraction("daily", false)}
+                    onPointerCancelCapture={() => setFeelInteraction("daily", false)}
+                    onTouchStartCapture={() => setFeelInteraction("daily", true)}
+                    onTouchEndCapture={() => setFeelInteraction("daily", false)}
                   >
-                    <div className="radar-map-canvas" ref={radarMapContainerRef} aria-hidden="true" />
-                    {radarLoading ? (
-                      <div className="radar-loading">Loading radar...</div>
-                    ) : !activeRadarFrame ? (
-                      <div className="radar-loading">Radar is unavailable.</div>
-                    ) : null}
-                    {radarError && (
-                      <div className="radar-status-chip" role="status">
-                        {radarError}
+                    <DailyForecastListCard
+                      days={dailyForecastDays}
+                      expandedIndex={forecastExpandedDayIndex}
+                      onToggleDay={handleToggleForecastDay}
+                    />
+                  </div>
+                  <div className="weather-insight-card radar-card">
+                    <div className="weather-insight-head">
+                      <div>
+                        <h4>Radar</h4>
+                        <p className="muted small">
+                          Drag to pan. Pinch or wheel to zoom. Reset centers on your selected local area.
+                        </p>
                       </div>
-                    )}
-                    {radarNearestSeries?.latest && (
-                      <div className="radar-focus-chip">
-                        <strong>
-                          {radarNearestSeries.location_name || "Nearest weather"}
-                        </strong>
-                        <span>
-                          {radarNearestSeries.latest.temperature ?? "--"}° • Feels{" "}
-                          {radarNearestSeries.latest.apparent_temperature ?? "--"}° • Hum{" "}
-                          {radarNearestSeries.latest.humidity ?? "--"}%
-                          {radarNearestSeries.distance_km !== undefined
-                            ? ` • ${radarNearestSeries.distance_km} km`
-                            : ""}
-                        </span>
+                      <div className="weather-insight-actions">
+                        <div className="update-chip small">
+                          {radarUpdatedAt ? `Updated ${radarUpdatedAt}` : "Updated --"}
+                        </div>
+                        <label className="toggle small">
+                          <input
+                            type="checkbox"
+                            checked={settings.autoRefreshRadar}
+                            onChange={(e) =>
+                              updateSetting("autoRefreshRadar", e.target.checked)
+                            }
+                          />
+                          <span className="toggle-track"></span>
+                          <span className="toggle-label">Auto refresh</span>
+                        </label>
                       </div>
-                    )}
-                    {activeRadarFrame && (
-                      <div className="radar-overlay-controls" role="group" aria-label="Radar controls">
-                        <button
-                          type="button"
-                          onClick={() => bumpRadarZoom(-1)}
-                          disabled={radarZoomLevel <= RADAR_MIN_ZOOM || radarLoading}
-                          title="Zoom out"
-                          aria-label="Zoom out"
-                        >
-                          <i className="fa-solid fa-magnifying-glass-minus" aria-hidden="true"></i>
-                        </button>
-                        <span className="radar-zoom-label">Zoom {radarZoomLevel}</span>
-                        <button
-                          type="button"
-                          onClick={() => bumpRadarZoom(1)}
-                          disabled={radarZoomLevel >= RADAR_MAX_ZOOM || radarLoading}
-                          title="Zoom in"
-                          aria-label="Zoom in"
-                        >
-                          <i className="fa-solid fa-magnifying-glass-plus" aria-hidden="true"></i>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={resetRadarView}
-                          title="Reset view"
-                          aria-label="Reset view"
-                        >
-                          <i className="fa-solid fa-crosshairs" aria-hidden="true"></i>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={toggleRadarFullscreen}
-                          title={radarFullscreen ? "Exit fullscreen" : "Fullscreen"}
-                          aria-label={radarFullscreen ? "Exit fullscreen" : "Fullscreen"}
-                        >
-                          <i
-                            className={`fa-solid ${
-                              radarFullscreen ? "fa-compress" : "fa-expand"
-                            }`}
-                            aria-hidden="true"
-                          ></i>
-                        </button>
-                      </div>
-                    )}
+                    </div>
+                    <div
+                      className={`radar-frame${radarFullscreen ? " is-fullscreen" : ""}`}
+                      ref={radarFrameRef}
+                      role="application"
+                      aria-label="Radar map"
+                      onPointerDownCapture={() => setFeelInteraction("radar", true)}
+                      onPointerUpCapture={() => setFeelInteraction("radar", false)}
+                      onPointerCancelCapture={() => setFeelInteraction("radar", false)}
+                      onTouchStartCapture={() => setFeelInteraction("radar", true)}
+                      onTouchEndCapture={() => setFeelInteraction("radar", false)}
+                    >
+                      <div className="radar-map-canvas" ref={radarMapContainerRef} aria-hidden="true" />
+                      {radarLoading ? (
+                        <div className="radar-loading">Loading radar...</div>
+                      ) : !activeRadarFrame ? (
+                        <div className="radar-loading">Radar is unavailable.</div>
+                      ) : null}
+                      {radarError && (
+                        <div className="radar-status-chip" role="status">
+                          {radarError}
+                        </div>
+                      )}
+                      {radarNearestSeries?.latest && (
+                        <div className="radar-focus-chip">
+                          <strong>
+                            {radarNearestSeries.location_name || "Nearest weather"}
+                          </strong>
+                          <span>
+                            {radarNearestSeries.latest.temperature ?? "--"}° • Feels{" "}
+                            {radarNearestSeries.latest.apparent_temperature ?? "--"}° • Hum{" "}
+                            {radarNearestSeries.latest.humidity ?? "--"}%
+                            {radarNearestSeries.distance_km !== undefined
+                              ? ` • ${radarNearestSeries.distance_km} km`
+                              : ""}
+                          </span>
+                        </div>
+                      )}
+                      {activeRadarFrame && (
+                        <div className="radar-overlay-controls" role="group" aria-label="Radar controls">
+                          <button
+                            type="button"
+                            onClick={() => bumpRadarZoom(-1)}
+                            disabled={radarZoomLevel <= RADAR_MIN_ZOOM || radarLoading}
+                            title="Zoom out"
+                            aria-label="Zoom out"
+                          >
+                            <i className="fa-solid fa-magnifying-glass-minus" aria-hidden="true"></i>
+                          </button>
+                          <span className="radar-zoom-label">Zoom {radarZoomLevel}</span>
+                          <button
+                            type="button"
+                            onClick={() => bumpRadarZoom(1)}
+                            disabled={radarZoomLevel >= RADAR_MAX_ZOOM || radarLoading}
+                            title="Zoom in"
+                            aria-label="Zoom in"
+                          >
+                            <i className="fa-solid fa-magnifying-glass-plus" aria-hidden="true"></i>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={resetRadarView}
+                            title="Reset view"
+                            aria-label="Reset view"
+                          >
+                            <i className="fa-solid fa-crosshairs" aria-hidden="true"></i>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={toggleRadarFullscreen}
+                            title={radarFullscreen ? "Exit fullscreen" : "Fullscreen"}
+                            aria-label={radarFullscreen ? "Exit fullscreen" : "Fullscreen"}
+                          >
+                            <i
+                              className={`fa-solid ${
+                                radarFullscreen ? "fa-compress" : "fa-expand"
+                              }`}
+                              aria-hidden="true"
+                            ></i>
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
 
@@ -8026,12 +8963,7 @@ export default function App() {
                         value={weatherChartLocation}
                         onChange={(e) => setWeatherChartLocation(e.target.value)}
                       >
-                        <option value="auto">
-                          Auto (nearest map center)
-                          {radarNearestSeries?.location_name
-                            ? ` • ${radarNearestSeries.location_name}`
-                            : ""}
-                        </option>
+                        <option value="auto">Auto (nearest map center)</option>
                         {weatherSeriesOptions.map((group) => (
                           <option key={group.key} value={group.key}>
                             {group.location_name}
@@ -8042,13 +8974,13 @@ export default function App() {
                     </div>
                   </div>
                   <div className="weather-chart-body weather-chart-body-rich">
-                    {weatherChartSeries && weatherChartPoints.length > 0 ? (
+                    {weatherChartPoints.length > 0 ? (
                       <>
                         <div className="weather-chart-kpis">
                           <div className="weather-kpi">
                             <span>Location</span>
                             <strong>
-                              {weatherChartSeries.location_name || "Unknown"}
+                              {weatherChartLocationLabel}
                             </strong>
                           </div>
                           <div className="weather-kpi">
@@ -8241,6 +9173,25 @@ export default function App() {
                                     rx="10"
                                     fill="rgba(148,163,184,0.08)"
                                   />
+                                  {weatherChartFocusedPoint
+                                    ? (() => {
+                                        const focusDot = weatherThermalChart.dots.find(
+                                          (dot) => dot.ts === weatherChartFocusedPoint.ts
+                                        );
+                                        if (!focusDot) return null;
+                                        return (
+                                          <line
+                                            x1={focusDot.x}
+                                            y1={weatherThermalChart.top}
+                                            x2={focusDot.x}
+                                            y2={weatherThermalChart.height - weatherThermalChart.bottom}
+                                            stroke="rgba(226,232,240,0.7)"
+                                            strokeWidth="1.2"
+                                            strokeDasharray="4 4"
+                                          />
+                                        );
+                                      })()
+                                    : null}
                                   {weatherThermalChart.tempAreaPath ? (
                                     <path d={weatherThermalChart.tempAreaPath} fill="url(#thermalTempArea)" />
                                   ) : null}
@@ -8271,20 +9222,44 @@ export default function App() {
                                         <circle
                                           cx={dot.x}
                                           cy={dot.tempY}
-                                          r="3.2"
+                                          r={weatherChartFocusedPoint?.ts === dot.ts ? "4.8" : "3.2"}
                                           fill="var(--surface)"
                                           stroke="#38bdf8"
                                           strokeWidth="1.8"
+                                          className="weather-chart-dot interactive"
+                                          role="button"
+                                          tabIndex={0}
+                                          onMouseEnter={() => setWeatherChartPointTs(dot.ts)}
+                                          onFocus={() => setWeatherChartPointTs(dot.ts)}
+                                          onClick={() => setWeatherChartPointTs(dot.ts)}
+                                          onKeyDown={(event) => {
+                                            if (event.key === "Enter" || event.key === " ") {
+                                              event.preventDefault();
+                                              setWeatherChartPointTs(dot.ts);
+                                            }
+                                          }}
                                         />
                                       ) : null}
                                       {Number.isFinite(dot.feelsY) ? (
                                         <circle
                                           cx={dot.x}
                                           cy={dot.feelsY}
-                                          r="2.6"
+                                          r={weatherChartFocusedPoint?.ts === dot.ts ? "4.2" : "2.6"}
                                           fill="var(--surface)"
                                           stroke="#f97316"
                                           strokeWidth="1.6"
+                                          className="weather-chart-dot interactive"
+                                          role="button"
+                                          tabIndex={0}
+                                          onMouseEnter={() => setWeatherChartPointTs(dot.ts)}
+                                          onFocus={() => setWeatherChartPointTs(dot.ts)}
+                                          onClick={() => setWeatherChartPointTs(dot.ts)}
+                                          onKeyDown={(event) => {
+                                            if (event.key === "Enter" || event.key === " ") {
+                                              event.preventDefault();
+                                              setWeatherChartPointTs(dot.ts);
+                                            }
+                                          }}
                                         />
                                       ) : null}
                                     </g>
@@ -8339,6 +9314,29 @@ export default function App() {
                                     rx="10"
                                     fill="rgba(148,163,184,0.08)"
                                   />
+                                  {weatherChartFocusedPoint
+                                    ? (() => {
+                                        const focusBar =
+                                          weatherAtmosChart.bars.find(
+                                            (bar) => bar.ts === weatherChartFocusedPoint.ts
+                                          ) ||
+                                          weatherAtmosChart.windDots.find(
+                                            (dot) => dot.ts === weatherChartFocusedPoint.ts
+                                          );
+                                        if (!focusBar) return null;
+                                        return (
+                                          <line
+                                            x1={focusBar.x}
+                                            y1={weatherAtmosChart.top}
+                                            x2={focusBar.x}
+                                            y2={weatherAtmosChart.height - weatherAtmosChart.bottom}
+                                            stroke="rgba(226,232,240,0.7)"
+                                            strokeWidth="1.2"
+                                            strokeDasharray="4 4"
+                                          />
+                                        );
+                                      })()
+                                    : null}
                                   {weatherAtmosChart.bars.map((bar, idx) => (
                                     <rect
                                       key={`humidity-bar-${idx}`}
@@ -8348,6 +9346,18 @@ export default function App() {
                                       height={bar.height.toFixed(2)}
                                       fill="url(#humidityBars)"
                                       rx="3"
+                                      className="weather-chart-dot interactive"
+                                      role="button"
+                                      tabIndex={0}
+                                      onMouseEnter={() => setWeatherChartPointTs(bar.ts)}
+                                      onFocus={() => setWeatherChartPointTs(bar.ts)}
+                                      onClick={() => setWeatherChartPointTs(bar.ts)}
+                                      onKeyDown={(event) => {
+                                        if (event.key === "Enter" || event.key === " ") {
+                                          event.preventDefault();
+                                          setWeatherChartPointTs(bar.ts);
+                                        }
+                                      }}
                                     />
                                   ))}
                                   {weatherAtmosChart.windPath ? (
@@ -8365,8 +9375,20 @@ export default function App() {
                                       key={`wind-dot-${idx}`}
                                       cx={dot.x}
                                       cy={dot.y}
-                                      r="2.8"
+                                      r={weatherChartFocusedPoint?.ts === dot.ts ? "4.2" : "2.8"}
                                       fill="#f59e0b"
+                                      className="weather-chart-dot interactive"
+                                      role="button"
+                                      tabIndex={0}
+                                      onMouseEnter={() => setWeatherChartPointTs(dot.ts)}
+                                      onFocus={() => setWeatherChartPointTs(dot.ts)}
+                                      onClick={() => setWeatherChartPointTs(dot.ts)}
+                                      onKeyDown={(event) => {
+                                        if (event.key === "Enter" || event.key === " ") {
+                                          event.preventDefault();
+                                          setWeatherChartPointTs(dot.ts);
+                                        }
+                                      }}
                                     />
                                   ))}
                                 </svg>
@@ -8442,6 +9464,39 @@ export default function App() {
                             )}
                           </article>
                         </div>
+                        {weatherChartFocusedPoint ? (
+                          <div className="weather-chart-focus-panel" role="status" aria-live="polite">
+                            <div className="weather-chart-focus-title">
+                              Focused sample: {formatTimestamp(weatherChartFocusedPoint.row?.weather_time || weatherChartFocusedPoint.row?.fetched_at) || "--"}
+                            </div>
+                            <div className="weather-chart-focus-grid">
+                              <div>
+                                <span>Temperature</span>
+                                <strong>{Number.isFinite(weatherChartFocusedPoint.temp) ? `${Math.round(weatherChartFocusedPoint.temp)}°` : "--"}</strong>
+                              </div>
+                              <div>
+                                <span>Feels Like</span>
+                                <strong>{Number.isFinite(weatherChartFocusedPoint.feels) ? `${Math.round(weatherChartFocusedPoint.feels)}°` : "--"}</strong>
+                              </div>
+                              <div>
+                                <span>Humidity</span>
+                                <strong>{Number.isFinite(weatherChartFocusedPoint.humidity) ? `${Math.round(weatherChartFocusedPoint.humidity)}%` : "--"}</strong>
+                              </div>
+                              <div>
+                                <span>Wind</span>
+                                <strong>{Number.isFinite(weatherChartFocusedPoint.wind) ? `${Math.round(weatherChartFocusedPoint.wind)} mph` : "--"}</strong>
+                              </div>
+                              <div>
+                                <span>Condition</span>
+                                <strong>{weatherChartFocusedPoint.row?.weather_label || weatherChartFocusedPoint.row?.source || "--"}</strong>
+                              </div>
+                              <div>
+                                <span>Location</span>
+                                <strong>{weatherChartLocationLabel}</strong>
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
                       </>
                     ) : (
                       <div className="results-empty">No weather chart data yet.</div>
@@ -8647,11 +9702,21 @@ export default function App() {
               </div>
             </div>
             <div className="floating-player-body">
-              <MediaPlayer className="media-player-frame floating-player-frame">
-                {renderVideoPlayerSurface(activeVideo, {
-                  onEnded: settings.videoAutoRotate ? goNextVideo : null,
-                })}
-              </MediaPlayer>
+              <VideoPlaybackSurface
+                video={activeVideo}
+                onEnded={settings.videoAutoRotate ? goNextVideo : null}
+                openExternal={openExternal}
+                autoPlay
+                muted
+                captionState={activeVideoCaptionState}
+                targetLanguage={translationTargetLanguage}
+                targetLanguageLabel={
+                  translationTargetLanguageLabel ||
+                  translationTargetLanguage.toUpperCase()
+                }
+                showCaptionPanel={false}
+                playerClassName="media-player-frame floating-player-frame"
+              />
             </div>
             <div className="floating-player-footer">
               {getVideoExternalUrl(activeVideo) ? (
@@ -8715,7 +9780,19 @@ export default function App() {
             </div>
             <div className="floating-player-body">
               <div className="radio-player-body floating-radio-body">
-                {renderRadioPlayback(activeRadio)}
+                <RadioPlaybackSurface
+                  radio={activeRadio}
+                  audioRef={radioAudioRef}
+                  onPlayStateChange={setRadioIsPlaying}
+                  onPlaybackError={setMessage}
+                  captionState={radioCaptionState}
+                  targetLanguage={translationTargetLanguage}
+                  targetLanguageLabel={
+                    translationTargetLanguageLabel ||
+                    translationTargetLanguage.toUpperCase()
+                  }
+                  compactCaptions
+                />
                 {activeRadio.tags ? (
                   <div className="radio-tags">
                     <span className="muted">Tags:</span> {activeRadio.tags}
@@ -8754,6 +9831,104 @@ export default function App() {
               ) : null}
             </div>
           </aside>
+        )}
+
+        {hourlyDetailOpen && hourlyDetailPoint && (
+          <div className="modal-overlay" onClick={closeHourlyDetail}>
+            <div
+              className="modal hourly-detail-modal"
+              role="dialog"
+              aria-modal="true"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <button
+                type="button"
+                className="modal-close"
+                aria-label="Close"
+                onClick={closeHourlyDetail}
+              >
+                X
+              </button>
+              <div className="read-only-header">
+                <h2 className="modal-title">Hourly forecast details</h2>
+                <p className="muted">
+                  {hourlyDetailPoint.timeISO
+                    ? new Date(hourlyDetailPoint.timeISO).toLocaleString([], {
+                        weekday: "short",
+                        hour: "numeric",
+                        minute: "2-digit",
+                      })
+                    : "--"}
+                </p>
+              </div>
+              <div className="weather-history-grid weather-history-grid-modal hourly-detail-grid">
+                <div>
+                  <strong>Condition</strong>
+                  <span>{hourlyDetailPoint.condition || "--"}</span>
+                </div>
+                <div>
+                  <strong>Temperature</strong>
+                  <span>
+                    {Number.isFinite(Number(hourlyDetailPoint.tempF))
+                      ? `${Math.round(Number(hourlyDetailPoint.tempF))}°`
+                      : "--"}
+                  </span>
+                </div>
+                <div>
+                  <strong>Feels like</strong>
+                  <span>
+                    {Number.isFinite(Number(hourlyDetailPoint.feelsLikeF))
+                      ? `${Math.round(Number(hourlyDetailPoint.feelsLikeF))}°`
+                      : "--"}
+                  </span>
+                </div>
+                <div>
+                  <strong>Precip chance</strong>
+                  <span>
+                    {Number.isFinite(Number(hourlyDetailPoint.precipChance))
+                      ? `${Math.round(Number(hourlyDetailPoint.precipChance))}%`
+                      : "--"}
+                  </span>
+                </div>
+                <div>
+                  <strong>Precip type</strong>
+                  <span>{hourlyDetailPoint.precipType || "--"}</span>
+                </div>
+                <div>
+                  <strong>Precip amount</strong>
+                  <span>
+                    {Number.isFinite(Number(hourlyDetailPoint.precipAmount))
+                      ? `${Number(hourlyDetailPoint.precipAmount).toFixed(2)} in`
+                      : "--"}
+                  </span>
+                </div>
+                <div>
+                  <strong>Wind</strong>
+                  <span>
+                    {Number.isFinite(Number(hourlyDetailPoint.windMph))
+                      ? `${Math.round(Number(hourlyDetailPoint.windMph))} mph`
+                      : "--"}
+                  </span>
+                </div>
+                <div>
+                  <strong>Humidity</strong>
+                  <span>
+                    {Number.isFinite(Number(hourlyDetailPoint.humidity))
+                      ? `${Math.round(Number(hourlyDetailPoint.humidity))}%`
+                      : "--"}
+                  </span>
+                </div>
+                <div>
+                  <strong>Pressure</strong>
+                  <span>
+                    {Number.isFinite(Number(hourlyDetailPoint.pressure))
+                      ? `${Math.round(Number(hourlyDetailPoint.pressure))} hPa`
+                      : "--"}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
 
         {weatherTrendOpen && weatherTrendGroup && (
@@ -9047,9 +10222,18 @@ export default function App() {
                 </div>
               </div>
               <div className="video-modal-player">
-                <MediaPlayer>
-                  {renderVideoPlayerSurface(videoModalVideo, { autoPlay: true, muted: false })}
-                </MediaPlayer>
+                <VideoPlaybackSurface
+                  video={videoModalVideo}
+                  openExternal={openExternal}
+                  autoPlay
+                  muted={false}
+                  captionState={videoModalCaptionState}
+                  targetLanguage={translationTargetLanguage}
+                  targetLanguageLabel={
+                    translationTargetLanguageLabel ||
+                    translationTargetLanguage.toUpperCase()
+                  }
+                />
               </div>
               <div className="video-modal-info">
                 <p className="modal-description">
@@ -9097,7 +10281,10 @@ export default function App() {
                 X
               </button>
               <div className="read-only-header">
-                <h2 className="modal-title">{readOnlyTitle || "Read-only"}</h2>
+                <h2 className="modal-title">{readOnlyDisplayTitle}</h2>
+                {readOnlyDisplaySummary ? (
+                  <p className="translation-summary">{readOnlyDisplaySummary}</p>
+                ) : null}
                 {readOnlyUrl && (
                   <a
                     className="read-only-source"
@@ -9117,6 +10304,15 @@ export default function App() {
               </div>
               <div className="read-only-toolbar">
                 <div className="read-only-actions">
+                  <TranslationToggle
+                    mode={readOnlyTranslationState.mode}
+                    onChange={readOnlyTranslationState.setMode}
+                    targetLanguageLabel={
+                      translationTargetLanguageLabel ||
+                      translationTargetLanguage.toUpperCase()
+                    }
+                    groupLabel="Article language"
+                  />
                   <button
                     type="button"
                     onClick={(event) => {
@@ -9170,6 +10366,23 @@ export default function App() {
                     Read aloud
                   </button>
                 </div>
+                {readOnlyTranslationState.loading ? (
+                  <div className="translation-status">Translating article text...</div>
+                ) : null}
+                {!readOnlyTranslatedActive &&
+                readOnlyTranslationState.translatedRequested &&
+                readOnlyTranslationState.error ? (
+                  <div className="translation-status error">
+                    {readOnlyTranslationState.error}
+                  </div>
+                ) : null}
+                {readOnlyTranslatedActive ? (
+                  <TranslationDisclosure
+                    sourceLanguage={readOnlyTranslationState.translation?.sourceLanguage}
+                    targetLanguage={translationTargetLanguage}
+                    notice={readOnlyTranslationState.translation?.translationNotice}
+                  />
+                ) : null}
                 {readOnlyStatus && <div className="read-only-status">{readOnlyStatus}</div>}
               </div>
               {(readOnlySpeaking || readOnlyPaused) && (
@@ -9201,6 +10414,10 @@ export default function App() {
                 <div className="read-only-loading">Loading read-only view...</div>
               ) : readOnlyError ? (
                 <div className="read-only-error">{readOnlyError}</div>
+              ) : readOnlyTranslatedActive ? (
+                <div className="read-only-content translated-read-only-content" ref={readOnlyContentRef}>
+                  <ArticleTranslationBody text={readOnlyDisplayBody} />
+                </div>
               ) : readOnlyHtml ? (
                 <div
                   className="read-only-content"
@@ -9272,7 +10489,7 @@ export default function App() {
         {appSettingsModal}
 
         {showFeaturesModal && (
-          <div className="modal-overlay" onClick={dismissFeaturesModal}>
+          <div className="modal-overlay">
             <div
               className="modal features-modal"
               role="dialog"

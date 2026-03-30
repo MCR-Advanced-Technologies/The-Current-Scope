@@ -22,17 +22,118 @@ const CLIENT_TOKEN =
   import.meta.env.VITE_APP_CLIENT_TOKEN ||
   import.meta.env.VITE_FRONTEND_CLIENT_TOKEN ||
   "";
-const DEPRECATED_BACKEND_HOSTS = new Set([
-  "newsapp-backend.rousehouse.net",
-  "newsapp_backend.rousehouse.net",
-  "thecurrentscope.com",
-  "www.thecurrentscope.com",
-  "frontend.thecurrentscope.com",
-  "victorious-water-014b7860f.1.azurestaticapps.net",
-]);
+const WEATHER_HOURLY_CAPABILITY_KEY = "newsapp_weather_hourly_capability_v1";
+const WEATHER_DAILY_CAPABILITY_KEY = "newsapp_weather_daily_capability_v1";
+const KNOWN_NO_HOURLY_ENDPOINT_HOSTS = new Set();
+const KNOWN_NO_DAILY_ENDPOINT_HOSTS = new Set();
 
 let buildHashCache = "";
 let webTokenMemory = "";
+const weatherHourlyEndpointSupportByBase = new Map();
+const weatherDailyEndpointSupportByBase = new Map();
+
+function getBaseHost(base) {
+  try {
+    return String(new URL(String(base || "")).hostname || "").toLowerCase();
+  } catch (err) {
+    return "";
+  }
+}
+
+function loadHourlyCapabilityCache() {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = window.localStorage.getItem(WEATHER_HOURLY_CAPABILITY_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return;
+    Object.entries(parsed).forEach(([base, supported]) => {
+      if (typeof base !== "string") return;
+      if (typeof supported !== "boolean") return;
+      weatherHourlyEndpointSupportByBase.set(base, supported);
+    });
+  } catch (err) {
+    // ignore storage parse errors
+  }
+}
+
+function loadDailyCapabilityCache() {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = window.localStorage.getItem(WEATHER_DAILY_CAPABILITY_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return;
+    Object.entries(parsed).forEach(([base, supported]) => {
+      if (typeof base !== "string") return;
+      if (typeof supported !== "boolean") return;
+      weatherDailyEndpointSupportByBase.set(base, supported);
+    });
+  } catch (err) {
+    // ignore storage parse errors
+  }
+}
+
+function saveHourlyCapabilityCache() {
+  if (typeof window === "undefined") return;
+  try {
+    const payload = {};
+    weatherHourlyEndpointSupportByBase.forEach((supported, base) => {
+      if (typeof base === "string" && typeof supported === "boolean") {
+        payload[base] = supported;
+      }
+    });
+    window.localStorage.setItem(WEATHER_HOURLY_CAPABILITY_KEY, JSON.stringify(payload));
+  } catch (err) {
+    // ignore storage write errors
+  }
+}
+
+function saveDailyCapabilityCache() {
+  if (typeof window === "undefined") return;
+  try {
+    const payload = {};
+    weatherDailyEndpointSupportByBase.forEach((supported, base) => {
+      if (typeof base === "string" && typeof supported === "boolean") {
+        payload[base] = supported;
+      }
+    });
+    window.localStorage.setItem(WEATHER_DAILY_CAPABILITY_KEY, JSON.stringify(payload));
+  } catch (err) {
+    // ignore storage write errors
+  }
+}
+
+function seedHourlyCapability(base) {
+  if (!base || weatherHourlyEndpointSupportByBase.has(base)) return;
+  const host = getBaseHost(base);
+  if (KNOWN_NO_HOURLY_ENDPOINT_HOSTS.has(host)) {
+    weatherHourlyEndpointSupportByBase.set(base, false);
+  }
+}
+
+function seedDailyCapability(base) {
+  if (!base || weatherDailyEndpointSupportByBase.has(base)) return;
+  const host = getBaseHost(base);
+  if (KNOWN_NO_DAILY_ENDPOINT_HOSTS.has(host)) {
+    weatherDailyEndpointSupportByBase.set(base, false);
+  }
+}
+
+function setHourlyCapability(base, supported) {
+  if (!base || typeof supported !== "boolean") return;
+  weatherHourlyEndpointSupportByBase.set(base, supported);
+  saveHourlyCapabilityCache();
+}
+
+function setDailyCapability(base, supported) {
+  if (!base || typeof supported !== "boolean") return;
+  weatherDailyEndpointSupportByBase.set(base, supported);
+  saveDailyCapabilityCache();
+}
+
+loadHourlyCapabilityCache();
+loadDailyCapabilityCache();
 
 function getClientHeaders() {
   if (typeof window === "undefined") return {};
@@ -205,6 +306,10 @@ function normalizeBase(value) {
   let candidate = String(value).trim();
   if (!candidate) return "";
   candidate = candidate.replace(
+    "newsapp.backend.rousehouse.net",
+    "newsapp-backend.rousehouse.net"
+  );
+  candidate = candidate.replace(
     "newsapp_backend.rousehouse.net",
     "newsapp-backend.rousehouse.net"
   );
@@ -226,15 +331,19 @@ function mapLegacyBackendToProxy(baseUrl) {
   try {
     const parsed = new URL(baseUrl);
     const host = (parsed.hostname || "").toLowerCase();
-    if (DEPRECATED_BACKEND_HOSTS.has(host)) return FALLBACK_BASE;
-    const currentHost = (window.location.hostname || "").toLowerCase();
-    const path = (parsed.pathname || "").toLowerCase();
-    const isSameOriginApi =
-      host &&
-      currentHost &&
-      host === currentHost &&
-      (path === "/api" || path.startsWith("/api/"));
-    if (isSameOriginApi) return FALLBACK_BASE;
+    if (
+      host === "newsapp-backend.rousehouse.net" ||
+      host === "newsapp_backend.rousehouse.net" ||
+      host === "newsapp.backend.rousehouse.net"
+    ) {
+      const protocol =
+        window.location.protocol === "https:" || window.location.protocol === "http:"
+          ? window.location.protocol
+          : "https:";
+      const hostWithPort = window.location.host || "";
+      if (!hostWithPort) return baseUrl;
+      return `${protocol}//${hostWithPort}/api`;
+    }
     return baseUrl;
   } catch (err) {
     return baseUrl;
@@ -253,27 +362,26 @@ function readStoredBase() {
 }
 
 function buildDefaultBase() {
-  const envBase = import.meta.env.VITE_BACKEND_URL;
-  const envNormalized = normalizeBase(envBase);
-  if (envNormalized) {
-    return envNormalized;
-  }
   if (typeof window !== "undefined") {
-    if (!isAppRuntime() && import.meta.env.DEV) {
-      const protocol =
-        window.location.protocol === "https:" || window.location.protocol === "http:"
-          ? window.location.protocol
-          : "https:";
-      const hostWithPort = window.location.host || "";
-      if (hostWithPort) {
-        return `${protocol}//${hostWithPort}/api`;
-      }
-    }
+    const envBase = import.meta.env.VITE_BACKEND_URL;
+    const envNormalized = normalizeBase(envBase);
     const protocol =
       window.location.protocol === "https:" || window.location.protocol === "http:"
         ? window.location.protocol
         : "https:";
     const host = window.location.hostname || "";
+    const hostWithPort = window.location.host || "";
+    const usesLocalProxy =
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host.endsWith(".local") ||
+      host.endsWith(".rousehouse.net");
+    if (!isAppRuntime() && usesLocalProxy && hostWithPort) {
+      return `${protocol}//${hostWithPort}/api`;
+    }
+    if (envNormalized) {
+      return mapLegacyBackendToProxy(envNormalized);
+    }
     const isLocal =
       host === "localhost" ||
       host === "127.0.0.1" ||
@@ -282,12 +390,16 @@ function buildDefaultBase() {
       const port = import.meta.env.VITE_BACKEND_PORT || "8001";
       return `${protocol}//${host}:${port}`;
     }
+    if (!isAppRuntime() && hostWithPort) {
+      return `${protocol}//${hostWithPort}/api`;
+    }
   }
   return FALLBACK_BASE;
 }
 
 export function getBackendUrl() {
-  return readStoredBase() || buildDefaultBase() || LEGACY_FALLBACK_BASE;
+  const value = readStoredBase() || buildDefaultBase() || LEGACY_FALLBACK_BASE;
+  return mapLegacyBackendToProxy(value);
 }
 
 async function readLegacyToken() {
@@ -451,12 +563,19 @@ async function fetchWithTimeout(url, init, timeoutMs, controller) {
 }
 
 async function fetchWithAuth(url, init = {}, options = {}) {
+  const timeoutMs = Number(options?.timeoutMs || 0);
+  const controller = options?.controller || null;
   const attempt = async () => {
     const headers = await getAuthHeaders();
-    return fetch(url, {
-      ...init,
-      headers: { ...headers, ...(init.headers || {}) },
-    });
+    return fetchWithTimeout(
+      url,
+      {
+        ...init,
+        headers: { ...headers, ...(init.headers || {}) },
+      },
+      timeoutMs,
+      controller
+    );
   };
   let res = await attempt();
   if ((res.status === 401 || res.status === 403) && isAppRuntime()) {
@@ -475,6 +594,188 @@ function clampInt(value, min, max, fallback) {
   if (!Number.isFinite(parsed)) return fallback;
   const rounded = Math.trunc(parsed);
   return Math.max(min, Math.min(max, rounded));
+}
+
+function mapWeatherRowsToHourly(rows, options = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return [];
+
+  const latitude = Number(options.latitude);
+  const longitude = Number(options.longitude);
+  const search = String(options.search || "").trim().toLowerCase();
+  const country = String(options.country || "").trim().toLowerCase();
+  const hours = clampInt(options.hours, 1, 48, 12);
+  const now = Date.now();
+
+  const withTs = list
+    .filter(Boolean)
+    .map((row) => {
+      const ts = Date.parse(
+        String(
+          row.weather_time ||
+            row.time ||
+            row.time_iso ||
+            row.fetched_at ||
+            row.created_at ||
+            ""
+        )
+      );
+      return { row, ts: Number.isFinite(ts) ? ts : 0 };
+    })
+    .filter((entry) => entry.ts > 0);
+
+  if (!withTs.length) return [];
+
+  const byLocation = withTs.filter(({ row }) => {
+    const name = String(row.location_name || row.search || "").trim().toLowerCase();
+    const rowCountry = String(row.country_code || row.country || "").trim().toLowerCase();
+    if (search && name && name.includes(search)) return true;
+    if (country && rowCountry && rowCountry === country) return true;
+    if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+      const rowLat = Number(row.latitude);
+      const rowLon = Number(row.longitude);
+      if (Number.isFinite(rowLat) && Number.isFinite(rowLon)) {
+        const dLat = Math.abs(rowLat - latitude);
+        const dLon = Math.abs(rowLon - longitude);
+        return dLat <= 1.25 && dLon <= 1.25;
+      }
+    }
+    return !search && !country;
+  });
+
+  const candidate = (byLocation.length ? byLocation : withTs).sort((a, b) => a.ts - b.ts);
+  const future = candidate.filter((entry) => entry.ts >= now - 60 * 60 * 1000);
+  const source = (future.length ? future : candidate).slice(0, hours);
+
+  return source.map(({ row, ts }) => {
+    const weatherCode = Number(row.weather_code);
+    const precipAmount = Number(
+      row.precipitation_amount ??
+        row.precipitation ??
+        row.precip_amount ??
+        0
+    );
+    const precipType = String(
+      row.precip_type ||
+        row.precipType ||
+        (Number.isFinite(precipAmount) && precipAmount > 0
+          ? Number.isFinite(weatherCode) && weatherCode >= 71 && weatherCode <= 77
+            ? "snow"
+            : "rain"
+          : "none")
+    ).toLowerCase();
+    const hour = new Date(ts).getHours();
+    return {
+      time: new Date(ts).toISOString(),
+      temperature: Number(row.temperature ?? row.temp ?? row.apparent_temperature),
+      condition: String(row.weather_label || row.condition || row.source || "Weather"),
+      precip_chance: Number(
+        row.precip_chance ??
+          row.precip_probability ??
+          row.precipitation_probability ??
+          0
+      ),
+      precip_type: precipType,
+      is_night:
+        typeof row.is_night === "boolean"
+          ? row.is_night
+          : typeof row.isNight === "boolean"
+          ? row.isNight
+          : hour < 6 || hour >= 18,
+    };
+  });
+}
+
+function mapWeatherRowsToDaily(rows, options = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return [];
+  const search = String(options.search || "").trim().toLowerCase();
+  const country = String(options.country || "").trim().toLowerCase();
+  const days = clampInt(options.days, 1, 14, 7);
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const todayTs = now.getTime();
+
+  const normalized = list
+    .filter(Boolean)
+    .map((row) => {
+      const ts = Date.parse(
+        String(row.weather_time || row.time || row.time_iso || row.fetched_at || row.created_at || "")
+      );
+      return { row, ts: Number.isFinite(ts) ? ts : 0 };
+    })
+    .filter((entry) => entry.ts > 0);
+  if (!normalized.length) return [];
+
+  const filtered = normalized.filter(({ row }) => {
+    const name = String(row.location_name || "").trim().toLowerCase();
+    const rowCountry = String(row.country_code || row.country || "").trim().toLowerCase();
+    if (search && name && name.includes(search)) return true;
+    if (country && rowCountry && rowCountry === country) return true;
+    return !search && !country;
+  });
+  const source = (filtered.length ? filtered : normalized).sort((a, b) => a.ts - b.ts);
+  const grouped = new Map();
+  source.forEach(({ row, ts }) => {
+    if (ts < todayTs) return;
+    const d = new Date(ts);
+    d.setHours(0, 0, 0, 0);
+    const key = d.toISOString().slice(0, 10);
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        date: key,
+        hi: Number.NEGATIVE_INFINITY,
+        lo: Number.POSITIVE_INFINITY,
+        precipChance: 0,
+        precipAmount: 0,
+        windMax: 0,
+        condition: "",
+        precipType: "none",
+      });
+    }
+    const bucket = grouped.get(key);
+    const temp = Number(row.temperature ?? row.temp ?? row.apparent_temperature);
+    if (Number.isFinite(temp)) {
+      bucket.hi = Math.max(bucket.hi, temp);
+      bucket.lo = Math.min(bucket.lo, temp);
+    }
+    const precipChance = Number(
+      row.precip_chance ?? row.precip_probability ?? row.precipitation_probability
+    );
+    if (Number.isFinite(precipChance)) {
+      bucket.precipChance = Math.max(bucket.precipChance, precipChance);
+    }
+    const precipAmount = Number(row.precipitation_amount ?? row.precipitation ?? 0);
+    if (Number.isFinite(precipAmount)) {
+      bucket.precipAmount += Math.max(0, precipAmount);
+    }
+    const wind = Number(row.wind_speed ?? row.wind_speed_max ?? 0);
+    if (Number.isFinite(wind)) {
+      bucket.windMax = Math.max(bucket.windMax, wind);
+    }
+    if (!bucket.condition) {
+      bucket.condition = String(row.weather_label || row.condition || row.source || "Weather");
+    }
+    const rowPrecipType = String(row.precip_type || row.precipType || "").toLowerCase();
+    if (rowPrecipType && rowPrecipType !== "none") {
+      bucket.precipType = rowPrecipType;
+    } else if (bucket.precipAmount > 0 && bucket.precipType === "none") {
+      bucket.precipType = "rain";
+    }
+  });
+
+  return Array.from(grouped.values())
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    .slice(0, days)
+    .map((row) => ({
+      date: `${row.date}T00:00:00`,
+      temp_max: Number.isFinite(row.hi) ? row.hi : null,
+      temp_min: Number.isFinite(row.lo) ? row.lo : null,
+      condition: String(row.condition || "Weather"),
+      precip_chance: Number.isFinite(row.precipChance) ? row.precipChance : null,
+      precip_type: String(row.precipType || "none"),
+      wind_speed_max: Number.isFinite(row.windMax) ? row.windMax : null,
+    }));
 }
 
 function normalizeWeatherParams(params = {}) {
@@ -601,12 +902,28 @@ export async function fetchVideoPlayback(sourceUrl, requestOptions = {}) {
   }
   const qs = new URLSearchParams();
   qs.set("url", value);
-  const res = await fetchWithAuth(`${base}/videos/playback?${qs.toString()}`, {
+  const timeoutMs = Number(requestOptions.timeoutMs || 12000);
+  const controller =
+    typeof AbortController !== "undefined" ? new AbortController() : null;
+  const requestInit = {
     cache: "no-store",
-    signal: requestOptions.signal,
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+    signal: requestOptions.signal || controller?.signal,
+  };
+  try {
+    const res = await fetchWithAuth(
+      `${base}/videos/playback?${qs.toString()}`,
+      requestInit,
+      { timeoutMs, controller }
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  } catch (err) {
+    const message = String(err?.message || "");
+    if (err?.name === "AbortError" || /timed out/i.test(message)) {
+      throw new Error("Video playback resolution timed out.");
+    }
+    throw err;
+  }
 }
 
 export async function fetchRadios(params = {}, requestOptions = {}) {
@@ -640,6 +957,214 @@ export async function fetchWeather(params = {}, requestOptions = {}) {
     throw await buildHttpError(res, "Weather request failed");
   }
   return res.json();
+}
+
+export async function fetchWeatherHourly(params = {}, requestOptions = {}) {
+  const base = getBackendUrl();
+  seedHourlyCapability(base);
+  const qs = new URLSearchParams();
+  const search = String(params.search || "").trim();
+  const country = String(params.country || "").trim();
+  const latitude = Number(params.latitude);
+  const longitude = Number(params.longitude);
+  const hours = clampInt(params.hours, 1, 48, 12);
+
+  if (search) qs.set("search", search);
+  if (country) qs.set("country", country);
+  if (Number.isFinite(latitude)) qs.set("latitude", String(latitude));
+  if (Number.isFinite(longitude)) qs.set("longitude", String(longitude));
+  qs.set("hours", String(hours));
+
+  const runFallback = async () => {
+    const fallbackQs = new URLSearchParams();
+    if (search) fallbackQs.set("search", search);
+    if (country) fallbackQs.set("country", country);
+    fallbackQs.set("sort_by", "weather_time");
+    fallbackQs.set("sort_dir", "asc");
+    fallbackQs.set("limit", "600");
+    fallbackQs.set("offset", "0");
+    fallbackQs.set("resolve", "true");
+    fallbackQs.set("resolve_limit", String(Math.max(12, hours)));
+    const fallbackRes = await fetchWithAuth(`${base}/weather?${fallbackQs.toString()}`, {
+      cache: "no-store",
+      signal: requestOptions.signal,
+    });
+    if (fallbackRes.ok) {
+      const rows = await fallbackRes.json();
+      return {
+        hourly: mapWeatherRowsToHourly(rows, {
+          latitude,
+          longitude,
+          search,
+          country,
+          hours,
+        }),
+      };
+    }
+    throw await buildHttpError(
+      fallbackRes,
+      "Hourly weather request failed and compatibility fallback failed"
+    );
+  };
+
+  const hourlySupport = weatherHourlyEndpointSupportByBase.get(base);
+  if (hourlySupport === false) {
+    return runFallback();
+  }
+
+  const hourlyUrl = `${base}/weather/hourly?${qs.toString()}`;
+  const res = await fetchWithAuth(hourlyUrl, {
+    cache: "no-store",
+    signal: requestOptions.signal,
+  });
+  if (res.ok) {
+    setHourlyCapability(base, true);
+    return res.json();
+  }
+
+  // Compatibility path for older backends that do not expose /weather/hourly yet.
+  if (res.status === 404) {
+    setHourlyCapability(base, false);
+    return runFallback();
+  }
+
+  if (!res.ok) {
+    throw await buildHttpError(res, "Hourly weather request failed");
+  }
+  return res.json();
+}
+
+export async function fetchWeatherDaily(params = {}, requestOptions = {}) {
+  const base = getBackendUrl();
+  seedDailyCapability(base);
+  const qs = new URLSearchParams();
+  const search = String(params.search || "").trim();
+  const country = String(params.country || "").trim();
+  const latitude = Number(params.latitude);
+  const longitude = Number(params.longitude);
+  const days = clampInt(params.days, 1, 14, 7);
+
+  if (search) qs.set("search", search);
+  if (country) qs.set("country", country);
+  if (Number.isFinite(latitude)) qs.set("latitude", String(latitude));
+  if (Number.isFinite(longitude)) qs.set("longitude", String(longitude));
+  qs.set("days", String(days));
+
+  const runOpenMeteoDailyFallback = async () => {
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return null;
+    }
+    const direct = new URL("https://api.open-meteo.com/v1/forecast");
+    direct.searchParams.set("latitude", String(latitude));
+    direct.searchParams.set("longitude", String(longitude));
+    direct.searchParams.set(
+      "daily",
+      [
+        "temperature_2m_max",
+        "temperature_2m_min",
+        "weather_code",
+        "precipitation_probability_max",
+        "precipitation_sum",
+        "wind_speed_10m_max",
+      ].join(",")
+    );
+    direct.searchParams.set("forecast_days", String(days));
+    direct.searchParams.set("timezone", "auto");
+    direct.searchParams.set("temperature_unit", "fahrenheit");
+    direct.searchParams.set("wind_speed_unit", "mph");
+    const directRes = await fetch(direct.toString(), {
+      cache: "no-store",
+      signal: requestOptions.signal,
+    });
+    if (!directRes.ok) return null;
+    const payload = await directRes.json();
+    const daily = payload?.daily || {};
+    const times = Array.isArray(daily.time) ? daily.time : [];
+    if (!times.length) return { daily: [] };
+    const highs = Array.isArray(daily.temperature_2m_max) ? daily.temperature_2m_max : [];
+    const lows = Array.isArray(daily.temperature_2m_min) ? daily.temperature_2m_min : [];
+    const codes = Array.isArray(daily.weather_code) ? daily.weather_code : [];
+    const precipChance = Array.isArray(daily.precipitation_probability_max)
+      ? daily.precipitation_probability_max
+      : [];
+    const precipSum = Array.isArray(daily.precipitation_sum) ? daily.precipitation_sum : [];
+    const windMax = Array.isArray(daily.wind_speed_10m_max) ? daily.wind_speed_10m_max : [];
+    const mapped = times.slice(0, days).map((t, idx) => {
+      const code = Number(codes[idx]);
+      const sum = Number(precipSum[idx]);
+      const type =
+        sum > 0
+          ? Number.isFinite(code) && code >= 71 && code <= 77
+            ? "snow"
+            : Number.isFinite(code) && (code === 96 || code === 99)
+            ? "mix"
+            : "rain"
+          : "none";
+      return {
+        date: `${String(t)}T00:00:00`,
+        temp_max: Number(highs[idx]),
+        temp_min: Number(lows[idx]),
+        condition: Number.isFinite(code) ? `Code ${code}` : "Weather",
+        precip_chance: Number(precipChance[idx]),
+        precip_type: type,
+        wind_speed_max: Number(windMax[idx]),
+      };
+    });
+    return { daily: mapped };
+  };
+
+  const runFallback = async () => {
+    const direct = await runOpenMeteoDailyFallback();
+    if (direct && Array.isArray(direct.daily) && direct.daily.length) {
+      return direct;
+    }
+    const fallbackQs = new URLSearchParams();
+    if (search) fallbackQs.set("search", search);
+    if (country) fallbackQs.set("country", country);
+    fallbackQs.set("sort_by", "weather_time");
+    fallbackQs.set("sort_dir", "asc");
+    fallbackQs.set("limit", "1200");
+    fallbackQs.set("offset", "0");
+    fallbackQs.set("resolve", "true");
+    fallbackQs.set("resolve_limit", String(Math.max(14, days)));
+    const fallbackRes = await fetchWithAuth(`${base}/weather?${fallbackQs.toString()}`, {
+      cache: "no-store",
+      signal: requestOptions.signal,
+    });
+    if (fallbackRes.ok) {
+      const rows = await fallbackRes.json();
+      return {
+        daily: mapWeatherRowsToDaily(rows, {
+          search,
+          country,
+          days,
+        }),
+      };
+    }
+    throw await buildHttpError(
+      fallbackRes,
+      "Daily weather request failed and compatibility fallback failed"
+    );
+  };
+
+  const dailySupport = weatherDailyEndpointSupportByBase.get(base);
+  if (dailySupport === false) {
+    return runFallback();
+  }
+
+  const res = await fetchWithAuth(`${base}/weather/daily?${qs.toString()}`, {
+    cache: "no-store",
+    signal: requestOptions.signal,
+  });
+  if (res.ok) {
+    setDailyCapability(base, true);
+    return res.json();
+  }
+  if (res.status === 404) {
+    setDailyCapability(base, false);
+    return runFallback();
+  }
+  throw await buildHttpError(res, "Daily weather request failed");
 }
 
 export async function fetchProviderStats() {
@@ -728,6 +1253,96 @@ export async function fetchReadableHtml(articleUrl, options = {}) {
   }
 }
 
+
+export async function fetchTranslationStatus(requestOptions = {}) {
+  const base = getBackendUrl();
+  const res = await fetchWithAuth(`${base}/translations/status`, {
+    cache: "no-store",
+    signal: requestOptions.signal,
+  });
+  if (!res.ok) {
+    throw await buildHttpError(res, "Translation status request failed");
+  }
+  return res.json();
+}
+
+export async function translateContent(payload = {}, requestOptions = {}) {
+  const base = getBackendUrl();
+  const timeoutMs = Number(requestOptions.timeoutMs || 45000);
+  const controller =
+    typeof AbortController !== "undefined" ? new AbortController() : null;
+  const res = await fetchWithAuth(
+    `${base}/translations`,
+    {
+      method: "POST",
+      cache: "no-store",
+      signal: requestOptions.signal || controller?.signal,
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload || {}),
+    },
+    { timeoutMs, controller }
+  );
+  if (!res.ok) {
+    throw await buildHttpError(res, "Translation request failed");
+  }
+  return res.json();
+}
+
+export async function translateTextBatch(items = [], requestOptions = {}) {
+  const list = Array.isArray(items) ? items.filter(Boolean) : [];
+  if (!list.length) {
+    return { items: [] };
+  }
+  const base = getBackendUrl();
+  const res = await fetchWithAuth(
+    `${base}/translations/text`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ items: list }),
+      cache: "no-store",
+      signal: requestOptions.signal,
+    },
+    {
+      timeoutMs: Number(requestOptions.timeoutMs || 30000),
+      controller: requestOptions.controller,
+    }
+  );
+  if (!res.ok) {
+    throw await buildHttpError(res, "Translation request failed");
+  }
+  return res.json();
+}
+
+export async function translateMediaText(payload = {}, requestOptions = {}) {
+  const body = payload && typeof payload === "object" ? payload : {};
+  const base = getBackendUrl();
+  const res = await fetchWithAuth(
+    `${base}/translations/media`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      cache: "no-store",
+      signal: requestOptions.signal,
+    },
+    {
+      timeoutMs: Number(requestOptions.timeoutMs || 30000),
+      controller: requestOptions.controller,
+    }
+  );
+  if (!res.ok) {
+    throw await buildHttpError(res, "Media translation request failed");
+  }
+  return res.json();
+}
+
 export async function fetchNow() {
   const base = getBackendUrl();
   const res = await fetchWithAuth(`${base}/service/fetch-now`, {
@@ -770,6 +1385,8 @@ export default {
   fetchVideoPlayback,
   fetchRadios,
   fetchWeather,
+  fetchWeatherHourly,
+  fetchWeatherDaily,
   fetchProviderStats,
   fetchSourceStats,
   fetchNow,
@@ -779,5 +1396,7 @@ export default {
   getToken,
   getBackendUrl,
   fetchReadableHtml,
+  translateTextBatch,
+  translateMediaText,
 };
 

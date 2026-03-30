@@ -4,8 +4,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 const YT_IFRAME_API_SRC = "https://www.youtube.com/iframe_api";
 const YT_IFRAME_API_ID = "newsapp-yt-iframe-api";
 const YT_EMBED_HOST = "https://www.youtube-nocookie.com";
-const BLOCKED_EMBED_CODES = new Set([101, 150, 153]);
-const HANDLED_ERROR_CODES = new Set([2, 100, 101, 150, 153]);
+const BLOCKED_EMBED_CODES = new Set([101, 150]);
+const HANDLED_ERROR_CODES = new Set([2, 100, 101, 150]);
 let ytApiLoadPromise = null;
 
 function isHttpProtocol(protocol) {
@@ -172,16 +172,21 @@ export default function YouTubePlayer({
   thumbnail = "",
   onEnded = null,
   openExternal = null,
+  onTimeChange = null,
+  onPlaybackStateChange = null,
 }) {
   const containerRef = useRef(null);
   const playerRef = useRef(null);
   const onEndedRef = useRef(onEnded);
+  const onTimeChangeRef = useRef(onTimeChange);
+  const onPlaybackStateChangeRef = useRef(onPlaybackStateChange);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState("");
   const [errorCode, setErrorCode] = useState(0);
   const [blocked, setBlocked] = useState(false);
   const [retryTick, setRetryTick] = useState(0);
   const [started, setStarted] = useState(false);
+  const [playing, setPlaying] = useState(false);
 
   const protocol = typeof window !== "undefined" ? window.location?.protocol || "" : "";
   const origin = useMemo(() => resolveYouTubeOrigin(), []);
@@ -190,6 +195,36 @@ export default function YouTubePlayer({
   useEffect(() => {
     onEndedRef.current = onEnded;
   }, [onEnded]);
+
+  useEffect(() => {
+    onTimeChangeRef.current = onTimeChange;
+  }, [onTimeChange]);
+
+  useEffect(() => {
+    onPlaybackStateChangeRef.current = onPlaybackStateChange;
+  }, [onPlaybackStateChange]);
+
+  const publishPlayerState = useCallback(
+    (nextState = {}) => {
+      const player = playerRef.current;
+      let currentTime = 0;
+      if (player && typeof player.getCurrentTime === "function") {
+        try {
+          currentTime = Number(player.getCurrentTime() || 0);
+        } catch (err) {
+          currentTime = 0;
+        }
+      }
+      onTimeChangeRef.current?.(currentTime);
+      onPlaybackStateChangeRef.current?.({
+        provider: "youtube",
+        syncSupported: true,
+        currentTime,
+        ...nextState,
+      });
+    },
+    []
+  );
 
   const destroyPlayer = useCallback(() => {
     const instance = playerRef.current;
@@ -218,6 +253,37 @@ export default function YouTubePlayer({
     [openExternal]
   );
 
+  const startMutedAutoplay = useCallback(
+    (player) => {
+      if (!player) return;
+      try {
+        if (typeof player.mute === "function") {
+          player.mute();
+        }
+        if (typeof player.playVideo === "function") {
+          player.playVideo();
+        }
+        setStarted(true);
+        devLog("autoplay_attempt", {
+          protocol,
+          origin: typeof window !== "undefined" ? window.location?.origin || "" : "",
+          host: YT_EMBED_HOST,
+          videoId,
+        });
+      } catch (err) {
+        setStarted(false);
+        devLog("autoplay_attempt_error", {
+          protocol,
+          origin: typeof window !== "undefined" ? window.location?.origin || "" : "",
+          host: YT_EMBED_HOST,
+          videoId,
+          error: String(err?.message || err || "unknown"),
+        });
+      }
+    },
+    [protocol, videoId]
+  );
+
   useEffect(() => {
     destroyPlayer();
     setReady(false);
@@ -225,6 +291,7 @@ export default function YouTubePlayer({
     setErrorCode(0);
     setBlocked(false);
     setStarted(false);
+    setPlaying(false);
 
     if (!videoId) {
       setError("invalid_video");
@@ -260,13 +327,12 @@ export default function YouTubePlayer({
           videoId,
           host: YT_EMBED_HOST,
           playerVars: {
-            autoplay: 0,
-            mute: 0,
+            autoplay: 1,
+            mute: 1,
             playsinline: 1,
             enablejsapi: 1,
-            controls: 1,
             rel: 0,
-            modestbranding: 1,
+            controls: 1,
             origin: origin || undefined,
           },
           events: {
@@ -277,18 +343,40 @@ export default function YouTubePlayer({
               setErrorCode(0);
               setBlocked(false);
               setStarted(false);
+              setPlaying(false);
+              publishPlayerState({ ready: true, isPlaying: false });
+              window.setTimeout(() => {
+                if (cancelled) return;
+                startMutedAutoplay(playerRef.current);
+              }, 0);
             },
             onStateChange: (event) => {
               if (cancelled) return;
-              if (event?.data === window.YT?.PlayerState?.PLAYING) {
-                setStarted(true);
-              }
+              const stateValue = event?.data;
+              const isPlaying =
+                stateValue === window.YT?.PlayerState?.PLAYING ||
+                stateValue === window.YT?.PlayerState?.BUFFERING;
+              setPlaying(isPlaying);
+              publishPlayerState({ ready: true, isPlaying, state: stateValue });
               if (event?.data === window.YT?.PlayerState?.ENDED) {
                 setStarted(false);
+                setPlaying(false);
                 if (typeof onEndedRef.current === "function") {
                   onEndedRef.current();
                 }
               }
+            },
+            onAutoplayBlocked: () => {
+              if (cancelled) return;
+              setStarted(false);
+              setPlaying(false);
+              publishPlayerState({ ready: true, isPlaying: false, autoplayBlocked: true });
+              devLog("autoplay_blocked", {
+                protocol,
+                origin: typeof window !== "undefined" ? window.location?.origin || "" : "",
+                host: YT_EMBED_HOST,
+                videoId,
+              });
             },
             onError: (event) => {
               if (cancelled) return;
@@ -298,6 +386,8 @@ export default function YouTubePlayer({
               setBlocked(mapped.blocked);
               setReady(false);
               setStarted(false);
+              setPlaying(false);
+              publishPlayerState({ ready: false, isPlaying: false, syncSupported: true });
               if (mapped.blocked) {
                 destroyPlayer();
               }
@@ -333,7 +423,21 @@ export default function YouTubePlayer({
       cancelled = true;
       destroyPlayer();
     };
-  }, [videoId, retryTick, isHttp, origin, destroyPlayer, protocol]);
+  }, [videoId, retryTick, isHttp, origin, destroyPlayer, protocol, publishPlayerState, startMutedAutoplay]);
+
+  useEffect(() => {
+    if (!ready) return undefined;
+
+    const publish = () => {
+      publishPlayerState({ ready: true, isPlaying: playing });
+    };
+
+    publish();
+    const intervalId = window.setInterval(publish, playing ? 250 : 700);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [playing, publishPlayerState, ready, retryTick, videoId]);
 
   const youtubeUrl = useMemo(
     () => sourceUrl || (videoId ? `https://www.youtube.com/watch?v=${videoId}` : ""),
@@ -351,6 +455,8 @@ export default function YouTubePlayer({
         player.playVideo();
       }
       setStarted(true);
+      setPlaying(true);
+      publishPlayerState({ ready: true, isPlaying: true });
       devLog("play_click", {
         protocol,
         origin: typeof window !== "undefined" ? window.location?.origin || "" : "",
@@ -360,6 +466,7 @@ export default function YouTubePlayer({
     } catch (err) {
       setError("playback_error");
       setStarted(false);
+      setPlaying(false);
       devLog("play_click_error", {
         protocol,
         origin: typeof window !== "undefined" ? window.location?.origin || "" : "",
@@ -387,20 +494,6 @@ export default function YouTubePlayer({
               {youtubeUrl ? (
                 <button type="button" className="primary" onClick={() => openExternalSafe(youtubeUrl)}>
                   Open on YouTube
-                </button>
-              ) : null}
-              {youtubeUrl ? (
-                <button
-                  type="button"
-                  onClick={async () => {
-                    try {
-                      await navigator.clipboard.writeText(youtubeUrl);
-                    } catch (err) {
-                      // ignore clipboard errors
-                    }
-                  }}
-                >
-                  Copy link
                 </button>
               ) : null}
               {canRetryInline ? (

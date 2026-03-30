@@ -1,5 +1,29 @@
 import React, { useEffect, useMemo, useState } from "react";
 
+function normalizePreviewText(value) {
+  return String(value || "")
+    .replace(/\[\+\d+\s*chars?\]\s*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function pickArticlePreview(article) {
+  const description = normalizePreviewText(article?.description);
+  const content = normalizePreviewText(article?.content);
+  if (!description) return content;
+  if (!content) return description;
+
+  const descriptionLower = description.toLowerCase();
+  const contentLower = content.toLowerCase();
+  if (
+    content.length > description.length + 40 &&
+    (contentLower.startsWith(descriptionLower) || !descriptionLower.startsWith(contentLower))
+  ) {
+    return content;
+  }
+  return description;
+}
+
 export default function ArticlesList({
   articles,
   resultsView,
@@ -71,7 +95,7 @@ export default function ArticlesList({
                 </a>
               </h4>
               <p className="result-description">
-                {stripHtml(article.description || article.content) ||
+                {stripHtml(pickArticlePreview(article)) ||
                   "No preview available."}
               </p>
               <div className="result-actions">

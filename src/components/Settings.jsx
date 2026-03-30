@@ -1,6 +1,12 @@
 import React, { useEffect, useRef } from "react";
 
 function useModalFocusTrap(enabled, modalRef, onClose) {
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
   useEffect(() => {
     if (!enabled) return undefined;
     const root = modalRef.current;
@@ -17,7 +23,7 @@ function useModalFocusTrap(enabled, modalRef, onClose) {
     const handleKeyDown = (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        if (typeof onClose === "function") onClose();
+        if (typeof onCloseRef.current === "function") onCloseRef.current();
         return;
       }
       if (event.key !== "Tab") return;
@@ -37,7 +43,7 @@ function useModalFocusTrap(enabled, modalRef, onClose) {
 
     root.addEventListener("keydown", handleKeyDown);
     return () => root.removeEventListener("keydown", handleKeyDown);
-  }, [enabled, modalRef, onClose]);
+  }, [enabled, modalRef]);
 }
 
 export function AppMenuModal({ open, onClose, sections, onOpenSection }) {
