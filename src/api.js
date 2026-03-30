@@ -351,7 +351,7 @@ function mapLegacyBackendToProxy(baseUrl) {
       currentHost === "127.0.0.1" ||
       currentHost.endsWith(".local") ||
       currentHost.endsWith(".rousehouse.net");
-    if (!usesLocalProxy && host === currentHost && currentPath === "/api") {
+    if (!usesLocalProxy && host === currentHost) {
       return FALLBACK_BASE;
     }
     return baseUrl;
