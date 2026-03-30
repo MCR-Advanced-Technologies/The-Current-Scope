@@ -43,3 +43,12 @@ Required CSP directives
 - `script-src-elem https://www.youtube.com https://www.youtube-nocookie.com https://maps.googleapis.com https://maps.gstatic.com`
 - `img-src https://i.ytimg.com https://*.ytimg.com`
 - Optional for strict policies: `media-src https://*.googlevideo.com`
+
+Build metadata
+
+- `npm run build` now auto-generates `public/build.json` before the Vite build.
+- The generated file includes:
+  - `version` from `package.json`
+  - `build_hash` / `commit` from `VITE_BUILD_HASH`, `BUILD_SOURCEVERSION`, `GITHUB_SHA`, or `git rev-parse HEAD`
+  - `built_at` in ISO-8601 UTC
+- This keeps the deployed frontend version/build metadata in sync without manual edits.

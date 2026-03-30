@@ -5,6 +5,8 @@
   "scripts": {
     "ci": "npm ci",
     "dev": "vite",
+    "generate:build-info": "node scripts/generate-build-json.mjs",
+    "prebuild": "npm run generate:build-info",
     "build": "vite build",
     "preview": "vite preview"
   },
