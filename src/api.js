@@ -26,6 +26,11 @@ const WEATHER_HOURLY_CAPABILITY_KEY = "newsapp_weather_hourly_capability_v1";
 const WEATHER_DAILY_CAPABILITY_KEY = "newsapp_weather_daily_capability_v1";
 const KNOWN_NO_HOURLY_ENDPOINT_HOSTS = new Set();
 const KNOWN_NO_DAILY_ENDPOINT_HOSTS = new Set();
+const LEGACY_DEV_BACKEND_HOSTS = new Set([
+  "newsapp-backend.rousehouse.net",
+  "newsapp_backend.rousehouse.net",
+  "newsapp.backend.rousehouse.net",
+]);
 
 let buildHashCache = "";
 let webTokenMemory = "";
@@ -325,19 +330,29 @@ function normalizeBase(value) {
   }
 }
 
-function mapLegacyBackendToProxy(baseUrl) {
+function isLocalProxyFrontendHost(hostname) {
+  const host = String(hostname || "").trim().toLowerCase();
+  return (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host.endsWith(".local") ||
+    host.endsWith(".rousehouse.net")
+  );
+}
+
+function mapLegacyBackendToProxy(baseUrl, options = {}) {
   if (typeof window === "undefined" || isAppRuntime()) return baseUrl;
   if (!baseUrl) return "";
+  const { userCustomized = false } = options;
   try {
     const parsed = new URL(baseUrl);
     const host = (parsed.hostname || "").toLowerCase();
     const currentHost = (window.location.hostname || "").toLowerCase();
-    const currentPath = parsed.pathname.replace(/\/+$/, "") || "/";
-    if (
-      host === "newsapp-backend.rousehouse.net" ||
-      host === "newsapp_backend.rousehouse.net" ||
-      host === "newsapp.backend.rousehouse.net"
-    ) {
+    const usesLocalProxy = isLocalProxyFrontendHost(currentHost);
+    if (LEGACY_DEV_BACKEND_HOSTS.has(host)) {
+      if (!usesLocalProxy) {
+        return userCustomized ? baseUrl : FALLBACK_BASE;
+      }
       const protocol =
         window.location.protocol === "https:" || window.location.protocol === "http:"
           ? window.location.protocol
@@ -346,11 +361,6 @@ function mapLegacyBackendToProxy(baseUrl) {
       if (!hostWithPort) return baseUrl;
       return `${protocol}//${hostWithPort}/api`;
     }
-    const usesLocalProxy =
-      currentHost === "localhost" ||
-      currentHost === "127.0.0.1" ||
-      currentHost.endsWith(".local") ||
-      currentHost.endsWith(".rousehouse.net");
     if (!usesLocalProxy && host === currentHost) {
       return FALLBACK_BASE;
     }
@@ -365,7 +375,9 @@ function readStoredBase() {
     const raw = window.localStorage.getItem(SETTINGS_KEY);
     if (!raw) return "";
     const data = JSON.parse(raw);
-    return mapLegacyBackendToProxy(normalizeBase(data?.backendUrl));
+    return mapLegacyBackendToProxy(normalizeBase(data?.backendUrl), {
+      userCustomized: Boolean(data?.backendUrlCustomized),
+    });
   } catch (err) {
     return "";
   }
@@ -390,7 +402,7 @@ function buildDefaultBase() {
       return `${protocol}//${hostWithPort}/api`;
     }
     if (envNormalized) {
-      return mapLegacyBackendToProxy(envNormalized);
+      return mapLegacyBackendToProxy(envNormalized, { userCustomized: false });
     }
     const isLocal =
       host === "localhost" ||
@@ -409,7 +421,7 @@ function buildDefaultBase() {
 
 export function getBackendUrl() {
   const value = readStoredBase() || buildDefaultBase() || LEGACY_FALLBACK_BASE;
-  return mapLegacyBackendToProxy(value);
+  return mapLegacyBackendToProxy(value, { userCustomized: false });
 }
 
 async function readLegacyToken() {
