@@ -318,6 +318,12 @@ const THEME_VARIABLES = {
   accentWarm: "--accent-warm",
   border: "--border",
 };
+const PRODUCTION_BACKEND_URL = "https://api.thecurrentscope.com";
+const LEGACY_DEV_BACKEND_HOSTS = new Set([
+  "newsapp-backend.rousehouse.net",
+  "newsapp_backend.rousehouse.net",
+  "newsapp.backend.rousehouse.net",
+]);
 
 const DEFAULT_SETTINGS = {
   theme: "light",
@@ -326,6 +332,7 @@ const DEFAULT_SETTINGS = {
   backgroundImage: "",
   overlayOpacity: 0.14,
   backendUrl: "",
+  backendUrlCustomized: false,
   wideLayout: false,
   autoRefreshHeadlines: false,
   autoRefreshResults: false,
@@ -368,41 +375,88 @@ const DEFAULT_SETTINGS = {
   translationTargetLanguage: "",
 };
 
+function isLocalProxyFrontendHost(hostname) {
+  const host = String(hostname || "").trim().toLowerCase();
+  return (
+    !host ||
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host.endsWith(".local") ||
+    host.endsWith(".rousehouse.net")
+  );
+}
+
+function getSettingsDefaultBackendUrl() {
+  if (typeof window === "undefined") return "";
+  const currentHost = (window.location.hostname || "").toLowerCase();
+  return isLocalProxyFrontendHost(currentHost) ? "" : PRODUCTION_BACKEND_URL;
+}
+
+function resolveConfiguredBackendUrl(value, options = {}) {
+  const { userCustomized = false } = options;
+  const normalized = normalizeBackendUrl(value);
+  if (typeof window === "undefined") {
+    return normalized || "";
+  }
+  const currentHost = (window.location.hostname || "").toLowerCase();
+  const defaultUrl = getSettingsDefaultBackendUrl();
+  if (isLocalProxyFrontendHost(currentHost)) {
+    return normalized || defaultUrl;
+  }
+  if (!normalized) {
+    return defaultUrl;
+  }
+  try {
+    const parsed = new URL(normalized);
+    const host = (parsed.hostname || "").toLowerCase();
+    const path = parsed.pathname.replace(/\/+$/, "") || "/";
+    const sameHost = host === currentHost;
+    if (sameHost && (path === "/" || path === "/api")) {
+      return defaultUrl || normalized;
+    }
+    if (!userCustomized && LEGACY_DEV_BACKEND_HOSTS.has(host)) {
+      return defaultUrl || normalized;
+    }
+    return normalized;
+  } catch (err) {
+    return defaultUrl;
+  }
+}
+
+function buildDefaultSettingsState() {
+  return {
+    ...DEFAULT_SETTINGS,
+    backendUrl: getSettingsDefaultBackendUrl(),
+    translationTargetLanguage: inferDefaultTranslationLanguage(),
+  };
+}
+
 function readSettings() {
   if (typeof window === "undefined") {
-    return {
-      ...DEFAULT_SETTINGS,
-      translationTargetLanguage: inferDefaultTranslationLanguage(),
-    };
+    return buildDefaultSettingsState();
   }
   let raw = "";
   try {
     raw = window.localStorage.getItem(SETTINGS_KEY) || "";
   } catch (err) {
     // Storage access can be blocked in some privacy contexts.
-    return {
-      ...DEFAULT_SETTINGS,
-      translationTargetLanguage: inferDefaultTranslationLanguage(),
-    };
+    return buildDefaultSettingsState();
   }
   if (!raw) {
-    return {
-      ...DEFAULT_SETTINGS,
-      translationTargetLanguage: inferDefaultTranslationLanguage(),
-    };
+    return buildDefaultSettingsState();
   }
   try {
     const data = JSON.parse(raw);
-    const merged = { ...DEFAULT_SETTINGS, ...data };
+    const merged = { ...buildDefaultSettingsState(), ...data };
+    merged.backendUrl = resolveConfiguredBackendUrl(merged.backendUrl, {
+      userCustomized: Boolean(merged.backendUrlCustomized),
+    });
     if (!normalizeTranslationLanguage(merged.translationTargetLanguage)) {
       merged.translationTargetLanguage = inferDefaultTranslationLanguage();
     }
     return merged;
   } catch (err) {
-    return {
-      ...DEFAULT_SETTINGS,
-      translationTargetLanguage: inferDefaultTranslationLanguage(),
-    };
+    return buildDefaultSettingsState();
   }
 }
 
@@ -1080,7 +1134,7 @@ export default function App() {
     translationTargetLanguage
   );
   const [backendUrlDraft, setBackendUrlDraft] = useState(
-    () => initialSettings.backendUrl || ""
+    () => initialSettings.backendUrl || getSettingsDefaultBackendUrl()
   );
   const userAgent =
     typeof window !== "undefined" ? window.navigator?.userAgent || "" : "";
@@ -1562,8 +1616,19 @@ export default function App() {
       setMessage("Enter a valid backend URL (include https://).");
       return;
     }
-    updateSetting("backendUrl", normalized);
-    setBackendUrlDraft(normalized);
+    const resolved = resolveConfiguredBackendUrl(normalized, {
+      userCustomized: true,
+    });
+    setSettings((prev) => {
+      const next = {
+        ...prev,
+        backendUrl: resolved,
+        backendUrlCustomized: true,
+      };
+      writeSettings(next);
+      return next;
+    });
+    setBackendUrlDraft(resolved);
     setMessage("Backend URL saved.");
     loadInstallerAvailability({ force: true });
     loadHeadlines();
@@ -2240,18 +2305,27 @@ export default function App() {
   }, []);
 
   const resetSettings = () => {
-    setSettings({ ...DEFAULT_SETTINGS });
-    writeSettings({ ...DEFAULT_SETTINGS });
-    setBackendUrlDraft("");
+    const nextSettings = {
+      ...DEFAULT_SETTINGS,
+      backendUrl: getSettingsDefaultBackendUrl(),
+      backendUrlCustomized: false,
+    };
+    setSettings(nextSettings);
+    writeSettings(nextSettings);
+    setBackendUrlDraft(nextSettings.backendUrl || "");
     setVideoPopoutOpen(false);
     setRadioPopoutOpen(false);
   };
 
   useEffect(() => {
     if (settings.backendUrl !== backendUrlDraft) {
-      setBackendUrlDraft(settings.backendUrl || "");
+      setBackendUrlDraft(
+        resolveConfiguredBackendUrl(settings.backendUrl, {
+          userCustomized: Boolean(settings.backendUrlCustomized),
+        }) || getSettingsDefaultBackendUrl()
+      );
     }
-  }, [settings.backendUrl]);
+  }, [settings.backendUrl, settings.backendUrlCustomized]);
 
   useEffect(() => {
     if (!settings.rememberPopoutState) return;
@@ -3902,7 +3976,12 @@ export default function App() {
   };
 
   async function checkBackendHealth({ notify } = {}) {
-    const normalized = normalizeBackendUrl(backendUrlDraft || getBackendUrl());
+    const normalized =
+      normalizeBackendUrl(backendUrlDraft) ||
+      resolveConfiguredBackendUrl(settings.backendUrl, {
+        userCustomized: Boolean(settings.backendUrlCustomized),
+      }) ||
+      getBackendUrl();
     if (!normalized) {
       setBackendHealth({ state: "error", label: "No URL" });
       setBackendConnection({ state: "error", label: "No URL" });
@@ -3948,7 +4027,12 @@ export default function App() {
   }
 
   async function checkBackendConnection({ notify } = {}) {
-    const normalized = normalizeBackendUrl(backendUrlDraft || getBackendUrl());
+    const normalized =
+      normalizeBackendUrl(backendUrlDraft) ||
+      resolveConfiguredBackendUrl(settings.backendUrl, {
+        userCustomized: Boolean(settings.backendUrlCustomized),
+      }) ||
+      getBackendUrl();
     if (!normalized) {
       setBackendConnection({ state: "error", label: "No URL" });
       return;
@@ -7224,7 +7308,7 @@ export default function App() {
               <input
                 type="url"
                 value={backendUrlDraft}
-                placeholder="https://newsapp-backend.rousehouse.net"
+                placeholder={getSettingsDefaultBackendUrl() || "https://api.thecurrentscope.com"}
                 onChange={(e) => setBackendUrlDraft(e.target.value)}
               />
               <p className="muted small">
